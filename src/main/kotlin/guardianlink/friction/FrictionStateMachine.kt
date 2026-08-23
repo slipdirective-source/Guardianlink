@@ -60,14 +60,22 @@ class FrictionStateMachine {
             val prior = ref.get()
             val nowMs = now.toEpochMilli()
 
+            // Uncapped: this is the true retry-pressure count and belongs in the
+            // audit trail as-is (evidence-only fidelity — don't clamp what actually
+            // happened). A rail retried 23 times should show 23, not 6.
             val escalation = if (prior.state == RailState.COOLING_OFF) prior.anomalyEscalationCount + 1 else 0
-            val extendedCoolingOff = baseCoolingOffMs * (1L shl minOf(escalation, 6))
+
+            // Capped separately: only the backoff *multiplier* needs a ceiling, so
+            // the cooling-off window doesn't grow unbounded on paper while still
+            // reflecting true attempt count in the stored field.
+            val cappedForBackoff = minOf(escalation, 6)
+            val extendedCoolingOff = baseCoolingOffMs * (1L shl cappedForBackoff)
 
             val updated = prior.copy(
                 state = RailState.COOLING_OFF,
                 coolingOffUntilMs = nowMs + extendedCoolingOff,
                 monotonicStamp = nextTick(),
-                anomalyEscalationCount = escalation
+                anomalyEscalationCount = escalation  // uncapped, stored as-is
             )
 
             if (ref.compareAndSet(prior, updated)) {
