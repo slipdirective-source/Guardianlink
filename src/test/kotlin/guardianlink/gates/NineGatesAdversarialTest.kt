@@ -226,6 +226,91 @@ class NineGatesAdversarialTest {
     }
 
     // ------------------------------------------------------------------
+    // Render injectivity regressions (Copilot HIGH: dangling-ELSE collision).
+    // ------------------------------------------------------------------
+
+    @Test
+    fun renderDanglingElseIsInjective() {
+        val c1 = Condition.FieldEquals("r", "f", "1")
+        val c2 = Condition.FieldEquals("r", "f", "2")
+        val a = Action.Read("a", listOf("x"))
+        val b = Action.Read("b", listOf("y"))
+        // Ambiguous without parens: ELSE binds to inner or outer Guarded?
+        val innerElse = Action.Guarded(c1, Action.Guarded(c2, a, b), null)
+        val outerElse = Action.Guarded(c1, Action.Guarded(c2, a, null), b)
+        val r1 = render(innerElse)
+        val r2 = render(outerElse)
+        assertTrue(r1 != r2, "DANGLING-ELSE COLLISION: both render as $r1")
+        // Both must be fully parenthesized so the binding is explicit.
+        assertTrue("ELSE (${render(b)})" in r1, "inner ELSE not parenthesized: $r1")
+        assertTrue("ELSE (${render(b)})" in r2, "outer ELSE not parenthesized: $r2")
+    }
+
+    @Test
+    fun renderStructuralCharactersCannotCollide() {
+        val evil = listOf(
+            "\"", "\\", "\"\"", "\\\"",
+            "{", "}", "{a=1,b=2}", "{}",
+            "(", ")", "IF", "THEN", "ELSE", "AND", "NOT",
+            "==", "=", ",", ";", ".", "SEQ[", "]",
+            "WRITE", "READ", "DELETE",
+            "r\" {a=\"1", "a\",b=\"2",
+            "\n", "\t", " ", "",
+            "üñîçødé", "𝄞", "\u0000",
+        )
+        val seen = mutableMapOf<String, Action>()
+        fun check(a: Action) {
+            val r = render(a)
+            val prev = seen.putIfAbsent(r, a)
+            assertTrue(prev == null || prev == a, "RENDER COLLISION on hostile payload: $a vs $prev -> $r")
+        }
+        for (s in evil) {
+            check(Action.Read(s, listOf(s)))
+            check(Action.Write(s, mapOf(s to s)))
+            check(Action.Delete(s))
+            check(Action.Guarded(Condition.FieldEquals(s, s, s), Action.Read(s, listOf(s)), Action.Delete(s)))
+        }
+        // Cross-constructor: a Write and a Delete whose payloads mimic each
+        // other's syntax must never collide.
+        assertTrue(
+            render(Action.Write("r", mapOf("a" to "1"))) != render(Action.Delete("r\" {\"a\"=\"1\"}")),
+            "cross-constructor collision",
+        )
+    }
+
+    @Test
+    fun renderInjectivityPropertyWithHostileAlphabet() {
+        // Property: render(a) == render(b) ==> a == b, over a hostile alphabet.
+        val rng = Random(0x1EC7)
+        val atoms = listOf("r", "f", "v", "\"", "\\", "{", "}", "(", ")", "ELSE", "==", ";", " ", "ünï")
+        fun atom(): String = (1..rng.nextInt(1, 4)).map { atoms.random(rng) }.joinToString("")
+        fun cond(d: Int): Condition =
+            if (d <= 0 || rng.nextBoolean()) Condition.FieldEquals(atom(), atom(), atom())
+            else if (rng.nextBoolean()) Condition.And(List(rng.nextInt(1, 3)) { cond(d - 1) })
+            else Condition.Not(cond(d - 1))
+        fun act(d: Int): Action = when {
+            d <= 0 -> when (rng.nextInt(3)) {
+                0 -> Action.Read(atom(), List(rng.nextInt(0, 3)) { atom() })
+                1 -> Action.Write(atom(), (1..rng.nextInt(0, 3)).associate { atom() to atom() })
+                else -> Action.Delete(atom())
+            }
+            else -> when (rng.nextInt(4)) {
+                0 -> Action.Sequence(List(rng.nextInt(1, 3)) { act(d - 1) })
+                1 -> Action.Guarded(cond(d - 1), act(d - 1))
+                2 -> Action.Guarded(cond(d - 1), act(d - 1), act(d - 1))
+                else -> act(0)
+            }
+        }
+        val seen = mutableMapOf<String, Action>()
+        repeat(3000) {
+            val a = act(3)
+            val r = render(a)
+            val prev = seen.putIfAbsent(r, a)
+            assertTrue(prev == null || prev == a, "INJECTIVITY VIOLATION: $a vs $prev both render as $r")
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Impact soundness: cooling scales with COMPUTED impact. If impactOf
     // ever understates, the cooling window is too short. Never allowed.
     // ------------------------------------------------------------------
