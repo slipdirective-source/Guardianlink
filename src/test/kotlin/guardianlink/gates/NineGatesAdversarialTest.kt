@@ -607,6 +607,54 @@ class NineGatesAdversarialTest {
         }
     }
 
+    @Test
+    fun errorThrowingPortsHaltWithLedgerEntry() {
+        // Round-2: checked() caught Exception only. An adapter throwing Error
+        // (AssertionError, StackOverflowError from hostile recursion) escaped
+        // evaluate() without a halt ledger record. Must halt, never escape.
+        val action = Action.Write("profile", mapOf("name" to "Neo"))
+        // Case 1: transition port throws Error.
+        run {
+            val v = FuzzVerifiers(evilApply = { _, _ -> throw AssertionError("hostile Error") })
+            val ledger = MerkleAuditLog()
+            val h = assertHalted(NineGates(rails, v).evaluate(passing(action).copy(ledger = ledger)))
+            assertTrue(h.reason.contains("threw"), "expected throw-halt, got: ${h.reason}")
+            assertEquals(1, ledger.size, "Error-throwing transition must leave a halt ledger record")
+        }
+        // Case 2: verification port throws Error.
+        run {
+            val inner = FuzzVerifiers()
+            val v = object : Verifiers by inner {
+                override fun verifySignature(message: ByteArray, signature: ByteArray): Boolean =
+                    throw StackOverflowError("hostile recursion")
+            }
+            val ledger = MerkleAuditLog()
+            val h = assertHalted(NineGates(rails, v).evaluate(passing(action).copy(ledger = ledger)))
+            assertEquals(1, h.atGate, "expected halt at gate 1, got $h")
+            assertEquals(1, ledger.size, "Error-throwing verifier must leave a halt ledger record")
+        }
+    }
+
+    @Test
+    fun ancientProofTimestampFailsClosed() {
+        // Round-2: tau - issuedAtMs overflowed to negative for issuedAtMs near
+        // Long.MIN_VALUE, defeating the freshness window. Must halt at gate 3.
+        val action = Action.Write("profile", mapOf("name" to "Neo"))
+        val v = FuzzVerifiers()
+        val gates = NineGates(rails, v)
+        val ancient = passing(action).copy(
+            proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = Long.MIN_VALUE)
+        )
+        val h = assertHalted(gates.evaluate(ancient))
+        assertEquals(3, h.atGate, "ancient proof must halt at gate 3, got: $h")
+        // Boundary: just inside the window is fresh and integrates.
+        val clock = FakeClock(20_000L)
+        val fresh = passing(action, clock = clock).copy(
+            proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = 20_000L - rails.deltaT + 1)
+        )
+        assertIntegrated(gates.evaluate(fresh))
+    }
+
     // ------------------------------------------------------------------
     // Hostile clock: non-monotonic, jumping. The engine must never crash
     // and must always resolve to Integrated or Halted.
