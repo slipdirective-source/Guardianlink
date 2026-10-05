@@ -1,14 +1,16 @@
 package guardianlink.friction
 
 import org.junit.jupiter.api.Test
-import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class FrictionStateMachineTest {
-    private val fsm = FrictionStateMachine()
+    // Time is injected, never caller-supplied: the clock lambda is the only
+    // time source the machine sees.
+    private var now = 1_000_000L
+    private val fsm = FrictionStateMachine(clock = { now })
 
     @Test
     fun testCreateHardRail() {
@@ -44,79 +46,73 @@ class FrictionStateMachineTest {
 
     @Test
     fun testEscalationCountIncrementsOnRetry() {
-        val now = Instant.now()
         fsm.createHardRail("escalation-test", 100L)
-        
-        val mod1 = fsm.requestModification("escalation-test", 100L, now)
+
+        val mod1 = fsm.requestModification("escalation-test", 100L)
         assertEquals(0, mod1.rail!!.anomalyEscalationCount)
-        
-        val mod2 = fsm.requestModification("escalation-test", 100L, now)
+
+        val mod2 = fsm.requestModification("escalation-test", 100L)
         assertEquals(1, mod2.rail!!.anomalyEscalationCount)
-        
-        val mod3 = fsm.requestModification("escalation-test", 100L, now)
+
+        val mod3 = fsm.requestModification("escalation-test", 100L)
         assertEquals(2, mod3.rail!!.anomalyEscalationCount)
     }
 
     @Test
     fun testEscalationCountCapsBackoffMultiplier() {
-        val now = Instant.now()
         fsm.createHardRail("cap-test", 1000L)
-        
-        var result = fsm.requestModification("cap-test", 1000L, now)
-        var window = result.rail!!.coolingOffUntilMs - now.toEpochMilli()
-        
+
+        var result = fsm.requestModification("cap-test", 1000L)
+
         repeat(10) {
-            result = fsm.requestModification("cap-test", 1000L, now)
+            result = fsm.requestModification("cap-test", 1000L)
         }
-        
-        val finalWindow = result.rail!!.coolingOffUntilMs - now.toEpochMilli()
+
+        val finalWindow = result.rail!!.coolingOffUntilMs - now
         val maxExpected = 1000L * (1L shl 6)  // 64x cap
-        
+
         assertTrue(finalWindow <= maxExpected)
         assertEquals(10, result.rail!!.anomalyEscalationCount)  // uncapped in storage
     }
 
     @Test
     fun testFinalizeModificationBeforeCoolingOff() {
-        val now = Instant.now()
         fsm.createHardRail("finalize-test", 5000L)
-        fsm.requestModification("finalize-test", 5000L, now)
-        
+        fsm.requestModification("finalize-test", 5000L)
+
         // Try to finalize immediately (still in cooling-off)
-        val result = fsm.finalizeModification("finalize-test", now)
+        val result = fsm.finalizeModification("finalize-test")
         assertFalse(result.success)
         assertTrue(result.conflict == false)  // not a conflict, just not ready
     }
 
     @Test
     fun testFinalizeModificationAfterCoolingOff() {
-        val now = Instant.now()
         fsm.createHardRail("finalize-after", 100L)
-        fsm.requestModification("finalize-after", 100L, now)
-        
-        val later = now.plusMillis(200L)
-        val result = fsm.finalizeModification("finalize-after", later)
-        
+        fsm.requestModification("finalize-after", 100L)
+
+        now += 200L
+        val result = fsm.finalizeModification("finalize-after")
+
         assertTrue(result.success)
         assertEquals(FrictionStateMachine.RailState.MODIFIABLE, result.rail!!.state)
     }
 
     @Test
     fun testEscalationCountPersistsAfterFinalize() {
-        val now = Instant.now()
         fsm.createHardRail("persist-test", 50L)
-        
+
         // Rack up some escalation
-        fsm.requestModification("persist-test", 50L, now)
-        fsm.requestModification("persist-test", 50L, now)
+        fsm.requestModification("persist-test", 50L)
+        fsm.requestModification("persist-test", 50L)
         val beforeFinalize = fsm.getRail("persist-test")!!
         assertEquals(1, beforeFinalize.anomalyEscalationCount)
-        
+
         // Finalize
-        val later = now.plusMillis(100L)
-        fsm.finalizeModification("persist-test", later)
+        now += 100L
+        fsm.finalizeModification("persist-test")
         val afterFinalize = fsm.getRail("persist-test")!!
-        
+
         // Escalation count unchanged
         assertEquals(1, afterFinalize.anomalyEscalationCount)
     }
@@ -127,5 +123,20 @@ class FrictionStateMachineTest {
         val rail = fsm.getRail("get-rail")
         assertNotNull(rail)
         assertEquals("get-rail", rail.id)
+    }
+
+    @Test
+    fun testBackwardClockJumpCannotShortenCoolingWindow() {
+        // Defense in depth: the internal monotonic high-water mark means a
+        // backward jump of the injected clock never shortens a live window.
+        fsm.createHardRail("backward-test", 5000L)
+        fsm.requestModification("backward-test", 5000L)
+        val until = fsm.getRail("backward-test")!!.coolingOffUntilMs
+        assertEquals(now + 5000L, until)
+
+        now -= 10_000L // clock jumps backward
+        val result = fsm.finalizeModification("backward-test")
+        assertFalse(result.success, "backward clock jump shortened the cooling window")
+        assertEquals(until, fsm.getRail("backward-test")!!.coolingOffUntilMs)
     }
 }
