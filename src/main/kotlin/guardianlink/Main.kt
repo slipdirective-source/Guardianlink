@@ -64,7 +64,7 @@ fun main() {
     println("Baseline label: value=${label.value}, confidence=${label.confidence}, status=${label.status}")
 
     val shift = trajectory.checkShift(150.0)
-    println("Anomaly check (value=150.0): shiftDetected=${shift.shiftDetected}, streak=${shift.consecutiveCount}")
+    println("Anomaly check (value=150.0): shiftDetected=${shift.shiftDetected}, anomaliesInWindow=${shift.anomalyCount}")
     println()
 
     // Demo: ShamirMfa secret sharing
