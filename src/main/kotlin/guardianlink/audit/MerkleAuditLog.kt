@@ -61,10 +61,12 @@ class MerkleAuditLog(
             currentRoot = computeRoot(leafHashes)
             Pair(entry, currentRoot)
         }
-        // ...but invoke the external anchor OUTSIDE the lock. A callback
-        // that appends reentrantly would otherwise interleave before this
-        // entry's anchor call fires, publishing roots out of order. Outside
-        // the lock, ordering is strict: anchor(i) always precedes anchor(i+1).
+        // ...but invoke the external anchor OUTSIDE the lock: a callback
+        // that appends reentrantly must not run while this append holds the
+        // lock. Ordering note: with concurrent appenders, anchor(i+1) may
+        // fire before anchor(i) — the lock is released before the call, so
+        // two threads can interleave here. Every anchor call carries its
+        // entry index; a real anchor MUST order by index, not by arrival.
         // An anchor exception propagates to the caller: the entry IS recorded
         // locally, but external durability failed — the caller must handle it.
         externalAnchor?.invoke(rootAfter, entry.index)
