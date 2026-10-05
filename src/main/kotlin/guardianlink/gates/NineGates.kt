@@ -251,7 +251,18 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         is Action.Write -> setOf(a.recordId)
         is Action.Delete -> setOf(a.recordId)
         is Action.Sequence -> a.steps.flatMap(::namedRecords).toSet()
-        is Action.Guarded -> namedRecords(a.then) + (a.otherwise?.let(::namedRecords) ?: emptySet())
+        is Action.Guarded -> namedRecords(a.then) +
+            (a.otherwise?.let(::namedRecords) ?: emptySet()) +
+            conditionRecords(a.condition)
+    }
+
+    // phi_iso must cover records named by conditions too: a Guarded whose
+    // condition reads a record outside the substrate is not isolated, even
+    // when both branches only touch known records.
+    private fun conditionRecords(c: Condition): Set<String> = when (c) {
+        is Condition.FieldEquals -> setOf(c.recordId)
+        is Condition.And -> c.parts.flatMap(::conditionRecords).toSet()
+        is Condition.Not -> conditionRecords(c.inner)
     }
 
     private fun euclidean(u: DoubleArray, v: DoubleArray): Double? {
