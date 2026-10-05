@@ -41,6 +41,7 @@ claims, not truth**:
 | Shamir share categories | Share math (field ranges, no dup x, threshold, mandatory HW label) | That a share labeled `HARDWARE_BIOMETRIC` really came from hardware — attestation binding + VSS commitments required |
 | Trajectory samples | Finiteness, magnitude bounds, self-consistency, windowed anomalies | That samples are authentic — signed/attested sensor streams required |
 | Merkle ledger | Tamper-evidence within the process | Immutability — requires a **durable external anchor** (write-once store / timestamping authority); the demo anchor only prints |
+| Assent idle-expiry (`theta_assent_idle`) | Assent age + ledger silence vs `maxAssentIdleMs` (24h) — an assent dies only when BOTH are exceeded | Ledger append times are caller-supplied: forged future-dated appends fake liveness the same way they forge the audit trail — the external anchor is the recourse |
 | Revocation scan | All revocations known at Gate 8 + seal time | Revocations issued after `evaluate()` returns but before the caller commits — callers MUST re-scan at commit or hold a commit lock |
 | `PolicyEngine` rail lifecycle | Authorization hook (`RailAuthorizer`, default deny-all) | Real authentication — capability tokens / signed admin commands required in production |
 | `FrictionStateMachine` time | Injected clock + backward-jump high-water mark | The clock being truly monotonic — deployments must inject a monotonic source |
@@ -56,8 +57,10 @@ Executable model of the Global Master Codex v2.2 Nine Gates FSM
 - Deterministic, fail-closed: any failing predicate drops to `S_HALT`,
   and every halt — including revocations — is appended to the Merkle ledger.
 - Crypto/governance plug in through `Verifiers`; the engine itself is pure.
-- Gate 7: assent over `Render(a)` (never the payload), fixed-rail cooling
-  window scaling with AST-computed impact, signed revocation until seal.
+- Gate 7: assent over `Render(a)` (never the payload), idle-max-age
+  (`maxAssentIdleMs` = 24h — an assent dies only when BOTH the assent is old
+  AND the ledger has been silent that long), fixed-rail cooling window
+  scaling with AST-computed impact, signed revocation until seal.
 - Gate 8: prepare-then-commit — `applyAction` is pure, the caller commits
   by adopting `GateOutcome.Integrated.newSubstrate`. The seal is never post-hoc.
 - 130+ tests in `NineGatesTest` / `NineGatesAdversarialTest` cover every gate's
