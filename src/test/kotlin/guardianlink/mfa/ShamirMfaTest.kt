@@ -72,10 +72,9 @@ class ShamirMfaTest {
         assertEquals(secret, reconstructed1)
         
         // Should fail without HARDWARE_BIOMETRIC
-        val reconstructed2 = mfa.reconstruct(listOf(shares[1], shares[2]))
-        // We can't use assertFailsWith here because the math might still give a "correct"
-        // looking result that's actually wrong. But the guard clause should block it.
-        // This test documents the intended behavior.
+        assertFailsWith<IllegalArgumentException> {
+            mfa.reconstruct(listOf(shares[1], shares[2]))
+        }
     }
 
     @Test

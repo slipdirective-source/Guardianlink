@@ -47,7 +47,10 @@ class TrajectoryEstimator(
             baseline.size < minBaselineSamples * 3 -> Confidence.MEDIUM
             else -> Confidence.HIGH
         }
-        val status = if (baseline.size < minBaselineSamples) LabelStatus.PROVISIONAL else LabelStatus.CONFIRMED
+        // A label is only CONFIRMED once the baseline reaches the HIGH-confidence
+        // sample count (3x minimum). Below that it stays PROVISIONAL and subject
+        // to the provisional TTL, matching the friction/cooling-off design.
+        val status = if (baseline.size < minBaselineSamples * 3) LabelStatus.PROVISIONAL else LabelStatus.CONFIRMED
         return Label(med, confidence, status, now.toEpochMilli())
     }
 

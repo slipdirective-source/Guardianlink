@@ -3,7 +3,6 @@ package guardianlink.policy
 import guardianlink.integrity.DeviceIntegrityTier
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIsInstance
 import kotlin.test.assertTrue
 
 class PolicyEngineTest {
@@ -17,7 +16,7 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.VERIFIED,
             context = "test"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Evidence>(decision)
+        assertTrue(decision is PolicyEngine.EnforcementDecision.Evidence)
     }
 
     @Test
@@ -28,7 +27,7 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.VERIFIED,
             context = "advisory test"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Advisory>(decision)
+        assertTrue(decision is PolicyEngine.EnforcementDecision.Advisory)
     }
 
     @Test
@@ -39,7 +38,7 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.VERIFIED,
             context = "enforce test"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Denied>(decision)
+        assertTrue(decision is PolicyEngine.EnforcementDecision.Denied)
     }
 
     @Test
@@ -51,7 +50,7 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.VERIFIED,
             context = "enforce with rail"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Enforce>(decision)
+        assertTrue(decision is PolicyEngine.EnforcementDecision.Enforce)
     }
 
     @Test
@@ -64,7 +63,7 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.COMPROMISED,
             context = "test"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Denied>(decisionEvidence)
+        assertTrue(decisionEvidence is PolicyEngine.EnforcementDecision.Denied)
         
         val decisionAdvisory = engine.evaluate(
             requestedTier = PolicyEngine.Tier.SOFT_ADVISORY,
@@ -72,7 +71,7 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.COMPROMISED,
             context = "test"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Denied>(decisionAdvisory)
+        assertTrue(decisionAdvisory is PolicyEngine.EnforcementDecision.Denied)
         
         val decisionEnforce = engine.evaluate(
             requestedTier = PolicyEngine.Tier.HARD_ENFORCE,
@@ -80,7 +79,7 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.COMPROMISED,
             context = "test"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Denied>(decisionEnforce)
+        assertTrue(decisionEnforce is PolicyEngine.EnforcementDecision.Denied)
     }
 
     @Test
@@ -93,7 +92,7 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.UNKNOWN,
             context = "test"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Denied>(decision)
+        assertTrue(decision is PolicyEngine.EnforcementDecision.Denied)
     }
 
     @Test
@@ -106,7 +105,7 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.VERIFIED,
             context = "test"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Enforce>(decision)
+        assertTrue(decision is PolicyEngine.EnforcementDecision.Enforce)
         
         engine.revokeHardRail("to-revoke")
         
@@ -116,6 +115,6 @@ class PolicyEngineTest {
             deviceIntegrity = DeviceIntegrityTier.Level.VERIFIED,
             context = "test"
         )
-        assertIsInstance<PolicyEngine.EnforcementDecision.Denied>(decision)
+        assertTrue(decision is PolicyEngine.EnforcementDecision.Denied)
     }
 }

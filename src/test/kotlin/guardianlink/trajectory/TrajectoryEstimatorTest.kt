@@ -60,7 +60,13 @@ class TrajectoryEstimatorTest {
     @Test
     fun testCheckShiftDetectsOutlier() {
         repeat(5) { estimator.addBaselineSample(100.0) }
-        val shift = estimator.checkShift(500.0)  // massive outlier
+
+        // A single outlier starts the streak but does not confirm...
+        var shift = estimator.checkShift(500.0)  // massive outlier
+        assertFalse(shift.shiftDetected)
+        // ...three consecutive outliers confirm the shift.
+        estimator.checkShift(500.0)
+        shift = estimator.checkShift(500.0)
         assertTrue(shift.shiftDetected)
     }
 
@@ -84,7 +90,8 @@ class TrajectoryEstimatorTest {
 
     @Test
     fun testCheckShiftStreakResetsOnNormal() {
-        repeat(5) { estimator.addBaselineSample(100.0) }
+        // Baseline with real variance so 101.0 counts as normal.
+        repeat(5) { estimator.addBaselineSample(100.0 + it * 0.5) }
         
         estimator.checkShift(500.0)  // 1
         estimator.checkShift(500.0)  // 2

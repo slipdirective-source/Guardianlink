@@ -24,3 +24,21 @@ compiler-verified — first CI run will confirm.
 Not included (expansion-path, not v1 core): MinorProfile adapter,
 HierarchicalOversight adapter, hardware Keystore/AES-GCM bindings (Android-target
 specific), aggregate research/consent-bundle layer.
+
+## Nine Gates policy core (`guardianlink.gates`)
+
+Executable model of the Global Master Codex v2.2 Nine Gates FSM
+(Sovereign Information Dynamics): `Action.kt` (A_total bounded AST),
+`Rails.kt` (fixed-rail thresholds), `GateContext.kt` (sigma vector),
+`Render.kt` (canonical rendering the person signs), `NineGates.kt`
+(the engine + `Verifiers` ports).
+
+- Deterministic, fail-closed: any failing predicate drops to `S_HALT`,
+  and every halt — including revocations — is appended to the Merkle ledger.
+- Crypto/governance plug in through `Verifiers`; the engine itself is pure.
+- Gate 7: assent over `Render(a)` (never the payload), fixed-rail cooling
+  window scaling with AST-computed impact, signed revocation until seal.
+- Gate 8: prepare-then-commit — `applyAction` is pure, the caller commits
+  by adopting `GateOutcome.Integrated.newSubstrate`. The seal is never post-hoc.
+- 20 tests in `NineGatesTest` cover every gate's halt path, cooling
+  scaling, revocation, and ledger appends. Demo in `Main.kt`.

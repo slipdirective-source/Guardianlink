@@ -5,7 +5,6 @@ import guardianlink.integrity.DeviceIntegrityTier
 import guardianlink.policy.PolicyEngine
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIsInstance
 import kotlin.test.assertTrue
 
 class ConciergeInterfaceTest {
@@ -23,7 +22,7 @@ class ConciergeInterfaceTest {
         
         val response = concierge.handle(request, DeviceIntegrityTier.Level.VERIFIED)
         
-        assertIsInstance<PolicyEngine.EnforcementDecision.Evidence>(response.decision)
+        assertTrue(response.decision is PolicyEngine.EnforcementDecision.Evidence)
         assertTrue(response.auditEntryIndex >= 0)
         assertEquals(1, auditLog.size)
     }
@@ -40,7 +39,7 @@ class ConciergeInterfaceTest {
         
         val response = concierge.handle(request, DeviceIntegrityTier.Level.VERIFIED)
         
-        assertIsInstance<PolicyEngine.EnforcementDecision.Enforce>(response.decision)
+        assertTrue(response.decision is PolicyEngine.EnforcementDecision.Enforce)
         assertEquals(1, auditLog.size)
     }
 
@@ -54,7 +53,7 @@ class ConciergeInterfaceTest {
         
         val response = concierge.handle(request, DeviceIntegrityTier.Level.COMPROMISED)
         
-        assertIsInstance<PolicyEngine.EnforcementDecision.Denied>(response.decision)
+        assertTrue(response.decision is PolicyEngine.EnforcementDecision.Denied)
         assertEquals(1, auditLog.size)  // Denied decisions still get logged
     }
 
@@ -98,7 +97,7 @@ class ConciergeInterfaceTest {
         
         val response = concierge.handle(request, deviceLevel)
         
-        assertIsInstance<PolicyEngine.EnforcementDecision.Enforce>(response.decision)
+        assertTrue(response.decision is PolicyEngine.EnforcementDecision.Enforce)
         assertTrue(response.auditEntryIndex >= 0)
         assertEquals(1, auditLog.size)
         

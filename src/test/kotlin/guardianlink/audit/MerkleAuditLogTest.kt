@@ -12,8 +12,8 @@ class MerkleAuditLogTest {
     fun testAppendEntry() {
         val entry = log.append("test data".toByteArray())
         assertEquals(0, entry.index)
-        assertEquals("test data".toByteArray().joinToString("") { "%02x".format(it) }, "")
-        // Just verify it doesn't crash and returns sensible data
+        assertEquals(1, log.size)
+        assertTrue(entry.payloadHash.isNotEmpty())
     }
 
     @Test

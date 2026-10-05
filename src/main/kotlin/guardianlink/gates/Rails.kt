@@ -1,0 +1,35 @@
+package guardianlink.gates
+
+/**
+ * Fixed rails (Codex v2.2, §I.3 — Fixed Rail Invariance).
+ *
+ * Immutable specification constants. No adaptive loop, trajectory estimate,
+ * or evidence record may modify them or grant authority. Construct once and
+ * share freely; the engine never mutates them.
+ *
+ * delta_cool is a fixed *schedule* (a function of computed impact), not a
+ * threshold constant — see [coolingWindowMs].
+ */
+data class Rails(
+    val gammaNoise: Double = 10.0,        // Gate 0: minimum signal SNR (theta_snr)
+    val epsilonBio: Double = 0.15,        // Gate 1: biometric distance bound (theta_bio)
+    val hMax: Double = 4.0,              // Gate 4: context entropy bound, bits (theta_ent)
+    val epsilonDrift: Double = 0.05,     // Gate 5: intent-drift cosine bound (theta_drift)
+    val epsilonGovernance: Double = 0.1, // Gate 6: governance divergence bound (psi_align)
+    val deltaT: Long = 60_000L,          // Gate 3: proof freshness window, ms (theta_time)
+    val baseCoolingMs: Long = 5_000L,    // Gate 7: cooling window base, ms
+    val coolingPerImpactStep: Long = 5_000L, // Gate 7: added per impact level above READ_ONLY
+    val maxActionNodes: Int = 64,        // Gate 0: A_total node bound (theta_ast)
+    val maxActionDepth: Int = 8,         // Gate 0: A_total depth bound (theta_ast)
+    val maxMemoryBytes: Long = 1_048_576L, // Gate 7: allocation bound (theta_mem)
+    val maxCycles: Long = 1_000_000L,    // Gate 7: cycle bound (theta_mem)
+    val bytesPerNode: Long = 1_024L,     // Gate 7: static memory estimate per AST node
+    val cyclesPerNode: Long = 1_000L,    // Gate 7: static cycle estimate per AST node
+) {
+    /**
+     * Fixed-rail cooling schedule (Codex v2.2, Gate 7, theta_cool).
+     * Scales with COMPUTED impact — never self-declared.
+     */
+    fun coolingWindowMs(impact: Impact): Long =
+        baseCoolingMs + impact.ordinal * coolingPerImpactStep
+}
