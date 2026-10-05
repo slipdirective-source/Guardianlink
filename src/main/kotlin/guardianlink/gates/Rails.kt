@@ -19,8 +19,14 @@ data class Rails(
     val deltaT: Long = 60_000L,          // Gate 3: proof freshness window, ms (theta_time)
     val baseCoolingMs: Long = 5_000L,    // Gate 7: cooling window base, ms
     val coolingPerImpactStep: Long = 5_000L, // Gate 7: added per impact level above READ_ONLY
-    val maxActionNodes: Int = 64,        // Gate 0: A_total node bound (theta_ast)
-    val maxActionDepth: Int = 8,         // Gate 0: A_total depth bound (theta_ast)
+    val maxActionNodes: Int = 64,        // Gate 0: A_total action-node bound (theta_ast)
+    val maxActionDepth: Int = 8,         // Gate 0: A_total action-depth bound (theta_ast)
+    val maxConditionNodes: Int = 64,    // Gate 0: condition-node bound (theta_ast)
+    val maxConditionDepth: Int = 8,      // Gate 0: condition-depth bound (theta_ast)
+    val maxStringBytes: Int = 256,      // Gate 0: per-atom UTF-8 byte bound (theta_ast)
+    val maxReadFields: Int = 32,        // Gate 0: Read field-count bound (theta_ast)
+    val maxWriteFields: Int = 32,       // Gate 0: Write map-cardinality bound (theta_ast)
+    val maxPayloadBytes: Long = 65_536L,// Gate 0: total payload byte bound (theta_ast)
     val maxMemoryBytes: Long = 1_048_576L, // Gate 7: allocation bound (theta_mem)
     val maxCycles: Long = 1_000_000L,    // Gate 7: cycle bound (theta_mem)
     val bytesPerNode: Long = 1_024L,     // Gate 7: static memory estimate per AST node
