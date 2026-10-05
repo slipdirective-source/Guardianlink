@@ -107,6 +107,51 @@ class SystemMonotonicClock : MonotonicClock {
     override fun nowMs(): Long = originMs + (System.nanoTime() - originNanos) / 1_000_000L
 }
 
+/**
+ * Durable monotonic clock: preserves monotonicity ACROSS restarts.
+ *
+ * SystemMonotonicClock is monotonic only within a process — after a
+ * restart its wall-clock origin can move backward, reopening replay and
+ * revocation-bypass windows. This adapter persists a high-water mark to
+ * [stateFile] and never reports a time below it: on startup the clock
+ * resumes at max(wall, persisted). A missing or corrupt state file falls
+ * back to wall time (fail-open only against an attacker who can delete
+ * the file — that attacker already owns the host; document the file's
+ * integrity requirement in deployment).
+ *
+ * Thread-safe; the high-water mark is written only when it advances.
+ */
+class DurableMonotonicClock(private val stateFile: java.io.File) : MonotonicClock {
+    private val inner = SystemMonotonicClock()
+    private var highWater: Long = readHighWater()
+
+    private fun readHighWater(): Long = try {
+        stateFile.takeIf { it.isFile }?.readText()?.trim()?.toLongOrNull() ?: Long.MIN_VALUE
+    } catch (_: Exception) {
+        Long.MIN_VALUE
+    }
+
+    private fun writeHighWater(t: Long) {
+        try {
+            stateFile.parentFile?.mkdirs()
+            stateFile.writeText(t.toString())
+        } catch (_: Exception) {
+            // Persistence is best-effort; monotonicity within this process
+            // still holds via the in-memory high-water mark.
+        }
+    }
+
+    @Synchronized
+    override fun nowMs(): Long {
+        val t = maxOf(inner.nowMs(), highWater)
+        if (t > highWater) {
+            highWater = t
+            writeHighWater(t)
+        }
+        return t
+    }
+}
+
 /** Deterministic clock for tests. */
 class FakeClock(var t: Long = 0L) : MonotonicClock {
     override fun nowMs(): Long = t
