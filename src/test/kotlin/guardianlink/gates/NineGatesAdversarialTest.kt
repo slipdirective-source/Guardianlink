@@ -882,6 +882,48 @@ class NineGatesAdversarialTest {
         }
     }
 
+    @Test
+    fun durableClockThrottlesPersistence() {
+        // 10k rapid ticks over 10s of clock time: the in-memory value must
+        // stay exact on every tick while file writes stay throttled to
+        // ~1 per PERSIST_THROTTLE_MS.
+        val writes = mutableListOf<Long>()
+        val fake = FakeClock(1_000_000L)
+        val f = java.io.File.createTempFile("tau", ".state")
+        try {
+            val c = DurableMonotonicClock(f, fake) { t ->
+                writes.add(t)
+                f.writeText(t.toString())
+            }
+            repeat(10_000) { fake.advance(1L); c.nowMs() }
+            assertTrue(writes.size <= 12, "expected throttled writes, got ${writes.size}")
+            assertTrue(writes.size >= 2, "throttle must still persist (got ${writes.size})")
+            assertEquals(1_010_000L, c.nowMs(), "in-memory value must stay exact")
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
+    fun durableClockRestartMonotonicWithThrottleGap() {
+        // The persisted copy may lag the observed high-water mark by up to
+        // PERSIST_THROTTLE_MS; a restart with a wall clock BEHIND the mark
+        // must still never move backward.
+        val f = java.io.File.createTempFile("tau", ".state")
+        try {
+            val fake1 = FakeClock(5_000_000L)
+            val c1 = DurableMonotonicClock(f, fake1)
+            repeat(100) { fake1.advance(10L); c1.nowMs() } // 1000ms of clock time
+            val last = c1.nowMs()
+            // Restart: same file, inner clock far behind (wall did not advance).
+            val c2 = DurableMonotonicClock(f, FakeClock(0L))
+            val resumed = c2.nowMs()
+            assertTrue(resumed >= last, "clock rolled back across restart: $resumed < $last")
+        } finally {
+            f.delete()
+        }
+    }
+
     // ------------------------------------------------------------------
     // Guarded semantics: the demo and the test harness previously
     // DISAGREED (demo always took `then`). Both now delegate to
@@ -943,5 +985,97 @@ class NineGatesAdversarialTest {
         assertEquals(1, assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(e1)).atGate)
         val e2 = base.copy(intentVector = doubleArrayOf(), currentVector = doubleArrayOf())
         assertEquals(5, assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(e2)).atGate)
+    }
+
+    // ------------------------------------------------------------------
+    // theta_assent_idle: an assent dies only when BOTH the assent is older
+    // than maxAssentIdleMs AND the ledger has been silent longer than
+    // maxAssentIdleMs. Seeded ledger appends use explicit Instants so the
+    // ledger lives in the FakeClock's tau domain.
+    // ------------------------------------------------------------------
+
+    private fun ledgerWithAppendsAt(vararg timesMs: Long): MerkleAuditLog {
+        val l = MerkleAuditLog()
+        timesMs.forEach { l.append("seed".toByteArray(), java.time.Instant.ofEpochMilli(it)) }
+        return l
+    }
+
+    @Test
+    fun assentIdleOldAssentSilentLedgerHalts() {
+        val tau = 200_000_000L
+        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), 0L)
+            .copy(ledger = ledgerWithAppendsAt(0L))
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        assertEquals(7, h.atGate)
+        assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
+    }
+
+    @Test
+    fun assentIdleEmptyLedgerOldAssentHalts() {
+        // Null snapshot falls back to the assent time: brand-new ledger +
+        // old assent = expired, fail closed.
+        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(200_000_000L), 0L)
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        assertEquals(7, h.atGate)
+        assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
+    }
+
+    @Test
+    fun assentIdleOldAssentActiveLedgerPasses() {
+        val tau = 200_000_000L
+        // Old assent, but the ledger was active 1ms ago: (b) fails → pass.
+        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), 0L)
+            .copy(ledger = ledgerWithAppendsAt(tau - 1))
+        assertIntegrated(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+    }
+
+    @Test
+    fun assentIdleFreshAssentSilentLedgerPasses() {
+        val tau = 200_000_000L
+        // Assent 10s ago: fresh ((a) fails), though the ledger is dark.
+        // READ cooling needs 5s elapsed — 10s clears it.
+        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), tau - 10_000L)
+            .copy(ledger = ledgerWithAppendsAt(0L))
+        assertIntegrated(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+    }
+
+    @Test
+    fun assentIdleFutureDatedAssentHalts() {
+        val tau = 200_000_000L
+        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), tau + 1)
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        assertEquals(7, h.atGate)
+        assertTrue(h.reason.contains("future"), h.reason)
+    }
+
+    @Test
+    fun assentIdleBoundary() {
+        val idle = rails.maxAssentIdleMs
+        val tau = 200_000_000L
+        // Just under the rail: passes.
+        val under = passing(Action.Read("profile", listOf("name")), FakeClock(tau), tau - (idle - 1))
+            .copy(ledger = ledgerWithAppendsAt(0L))
+        assertIntegrated(NineGates(rails, FuzzVerifiers()).evaluate(under))
+        // Just over on both conditions: halts. Fresh ledger: the passing
+        // run above sealed into `under`'s ledger, so use a new one.
+        val over = passing(Action.Read("profile", listOf("name")), FakeClock(tau), tau - (idle + 1))
+            .copy(ledger = ledgerWithAppendsAt(0L))
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(over))
+        assertEquals(7, h.atGate)
+        assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
+    }
+
+    @Test
+    fun assentIdleOverflowLedgerTimestampSaturates() {
+        // A ledger append near Long.MIN_VALUE would overflow (tau - snapshot)
+        // into a negative "idle" — the saturation must force the halt, never
+        // a fail-open pass.
+        val tau = 200_000_000L
+        val l = MerkleAuditLog()
+        l.append("seed".toByteArray(), java.time.Instant.ofEpochMilli(Long.MIN_VALUE))
+        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), 0L).copy(ledger = l)
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        assertEquals(7, h.atGate)
+        assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
     }
 }
