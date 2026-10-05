@@ -78,7 +78,32 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
             null
         }
 
+    /**
+     * Single-evaluation slot: the substrate transition is prepared EXACTLY
+     * ONCE per evaluate() call. Gate 6 fills the slot; Gate 8 and the seal
+     * consume it. The adapter is never asked twice, so a stateful or
+     * nondeterministic adapter cannot validate one result and seal another.
+     * Fresh per evaluate() — never shared across evaluations or threads.
+     */
+    private class Prepared {
+        var state: SubstrateState? = null
+        var threw: Boolean = false
+    }
+
+    private fun prepare(ctx: GateContext, prep: Prepared): SubstrateState? {
+        prep.state?.let { return it }
+        if (prep.threw) return null
+        val s = checked { verifiers.applyAction(ctx.substrate, ctx.action) }
+        if (s == null) {
+            prep.threw = true
+            return null
+        }
+        prep.state = s
+        return s
+    }
+
     fun evaluate(ctx: GateContext): GateOutcome {
+        val prep = Prepared()
         for (k in 0..8) {
             val reason = when (k) {
                 0 -> gate0(ctx)
@@ -87,9 +112,9 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
                 3 -> gate3(ctx)
                 4 -> gate4(ctx)
                 5 -> gate5(ctx)
-                6 -> gate6(ctx)
+                6 -> gate6(ctx, prep)
                 7 -> gate7(ctx)
-                8 -> gate8(ctx)
+                8 -> gate8(ctx, prep)
                 else -> "unreachable gate $k"
             }
             if (reason != null) {
@@ -97,11 +122,13 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
                 return GateOutcome.Halted(k, reason)
             }
         }
-        // Gate 8 seal: prepare x' purely, then seal the transition in M.
-        // A throwing transition port halts instead of escaping.
-        val newSubstrate = checked { verifiers.applyAction(ctx.substrate, ctx.action) }
+        // Gate 8 seal: commit the PREPARED transition — the same state Gate 6
+        // (psi_inv) and Gate 8 (theta_atom) validated. No second evaluation.
+        // All gates passed, so the slot is filled; the null branch is
+        // unreachable defense-in-depth.
+        val newSubstrate = prep.state
         if (newSubstrate == null) {
-            val reason = "theta_atom: transition verifier threw (fail-closed)"
+            val reason = "theta_atom: prepared transition missing (fail-closed)"
             ctx.ledger.append("HALT gate=8 action=${ctx.actionId} reason=$reason".toByteArray())
             return GateOutcome.Halted(8, reason)
         }
@@ -187,13 +214,14 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
     }
 
     // GATE 6: GOVERNANCE FILTER
-    private fun gate6(ctx: GateContext): String? {
+    private fun gate6(ctx: GateContext, prep: Prepared): String? {
         val rulesOk = checked { verifiers.policyRules(ctx.action, ctx.substrate) }
             ?: return "psi_rules: governance verifier threw (fail-closed)"
         if (!rulesOk) return "psi_rules: governance rule failed"
         // psi_inv: core invariants of the transition — no record may appear
         // from nothing (the AST has no create node) and no field map may be null.
-        val next = checked { verifiers.applyAction(ctx.substrate, ctx.action) }
+        // This call FILLS the single-evaluation slot (see prepare()).
+        val next = prepare(ctx, prep)
             ?: return "psi_inv: transition verifier threw (fail-closed)"
         val created = next.records.keys - ctx.substrate.records.keys
         if (created.isNotEmpty()) return "psi_inv: transition creates records: $created"
@@ -228,7 +256,7 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
     }
 
     // GATE 8: SOVEREIGN INTEGRATION & IMMUTABLE SEAL
-    private fun gate8(ctx: GateContext): String? {
+    private fun gate8(ctx: GateContext, prep: Prepared): String? {
         // theta_norev: a signed revocation between Gate 7 and Gate 8 drops to S_HALT.
         val tau = ctx.clock.nowMs()
         for (r in ctx.revocations) {
@@ -237,9 +265,9 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
                 ?: return "theta_norev: revocation verifier threw (fail-closed)"
             if (valid) return "theta_norev: valid signed revocation exists"
         }
-        // theta_atom: the transition is exactly the pure function's result —
-        // deterministic by construction; well-formedness is the check.
-        val next = checked { verifiers.applyAction(ctx.substrate, ctx.action) }
+        // theta_atom: the transition is the PREPARED state from Gate 6 —
+        // never recomputed. Well-formedness is re-checked on that same state.
+        val next = prepare(ctx, prep)
             ?: return "theta_atom: transition verifier threw (fail-closed)"
         if (next.records.values.any { it == null }) return "theta_atom: malformed transition"
         // theta_merkle: the seal append happens in evaluate() after all gates pass.
