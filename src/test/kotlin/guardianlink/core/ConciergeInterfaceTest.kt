@@ -3,12 +3,13 @@ package guardianlink.core
 import guardianlink.audit.MerkleAuditLog
 import guardianlink.integrity.DeviceIntegrityTier
 import guardianlink.policy.PolicyEngine
+import guardianlink.policy.RailAuthorizer
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ConciergeInterfaceTest {
-    private val policyEngine = PolicyEngine()
+    private val policyEngine = PolicyEngine(authorizer = RailAuthorizer.PERMISSIVE)
     private val auditLog = MerkleAuditLog()
     private val concierge = ConciergeInterface(policyEngine, auditLog)
 
