@@ -123,39 +123,93 @@ class SystemMonotonicClock : MonotonicClock {
  * restart its wall-clock origin can move backward, reopening replay and
  * revocation-bypass windows. This adapter persists a high-water mark to
  * [stateFile] and never reports a time below it: on startup the clock
- * resumes at max(wall, persisted). A missing or corrupt state file falls
- * back to wall time (fail-open only against an attacker who can delete
- * the file — that attacker already owns the host; document the file's
- * integrity requirement in deployment).
+ * resumes at max(wall, persisted + throttle) — see the crash-safety
+ * argument in [nowMs].
  *
- * Thread-safe; the high-water mark is written only when it advances.
+ * Persistence is THROTTLED: at most one state-file write per
+ * [PERSIST_THROTTLE_MS] of clock advance. nowMs() itself stays exact on
+ * every tick; only the durable copy lags, and the lag is bounded.
+ *
+ * There is no close/flush hook: for a clean shutdown, tick once more
+ * before exit to narrow the persist lag to ~0.
+ *
+ * Thread-safe. A missing or corrupt state file falls back to wall time
+ * (fail-open only against an attacker who can delete the file — that
+ * attacker already owns the host; document the file's integrity
+ * requirement in deployment). Writes are best-effort: if the file cannot
+ * be written, crash-monotonicity degrades to the wall clock — monitor the
+ * file in production.
  */
-class DurableMonotonicClock(private val stateFile: java.io.File) : MonotonicClock {
-    private val inner = SystemMonotonicClock()
-    private var highWater: Long = readHighWater()
+class DurableMonotonicClock(
+    private val stateFile: java.io.File,
+    private val inner: MonotonicClock = SystemMonotonicClock(),
+    /**
+     * Persistence sink, separated for testability: the throttle is verified
+     * by counting sink invocations. Defaults to the state file.
+     */
+    internal val persist: (Long) -> Unit = { t -> writeStateFile(stateFile, t) },
+) : MonotonicClock {
+    companion object {
+        /**
+         * Persistence throttle: at most one write per interval of clock
+         * advance. Also the worst-case forward jump on restart (see below).
+         */
+        const val PERSIST_THROTTLE_MS: Long = 1000L
 
-    private fun readHighWater(): Long = try {
-        stateFile.takeIf { it.isFile }?.readText()?.trim()?.toLongOrNull() ?: Long.MIN_VALUE
-    } catch (_: Exception) {
-        Long.MIN_VALUE
+        private fun saturatingAdd(a: Long, b: Long): Long =
+            if (a > Long.MAX_VALUE - b) Long.MAX_VALUE else a + b
+
+        private fun writeStateFile(f: java.io.File, t: Long) {
+            try {
+                f.parentFile?.mkdirs()
+                f.writeText(t.toString())
+            } catch (_: Exception) {
+                // Persistence is best-effort; monotonicity within this process
+                // still holds via the in-memory high-water mark.
+            }
+        }
     }
 
-    private fun writeHighWater(t: Long) {
-        try {
-            stateFile.parentFile?.mkdirs()
-            stateFile.writeText(t.toString())
-        } catch (_: Exception) {
-            // Persistence is best-effort; monotonicity within this process
-            // still holds via the in-memory high-water mark.
-        }
+    /** Raw persisted value; null when the file is missing or corrupt. */
+    private val persisted: Long? = readPersisted()
+
+    /**
+     * Crash-recovery: the persisted value may lag the pre-crash in-memory
+     * high-water mark by up to PERSIST_THROTTLE_MS (throttled writes — see
+     * nowMs for why the lag is strictly bounded). Resuming from
+     * persisted + throttle (saturating) therefore starts strictly above any
+     * value this clock ever returned, so the clock can never move backward
+     * across a restart. Cost: a forward jump of up to PERSIST_THROTTLE_MS
+     * per restart; repeated restarts ratchet forward by up to the throttle
+     * each time.
+     */
+    private var highWater: Long =
+        persisted?.let { saturatingAdd(it, PERSIST_THROTTLE_MS) } ?: Long.MIN_VALUE
+
+    /** Clock value at the last persist; null until the first write. */
+    private var lastWriteAt: Long? = persisted
+
+    private fun readPersisted(): Long? = try {
+        stateFile.takeIf { it.isFile }?.readText()?.trim()?.toLongOrNull()
+    } catch (_: Exception) {
+        null
     }
 
     @Synchronized
     override fun nowMs(): Long {
         val t = maxOf(inner.nowMs(), highWater)
-        if (t > highWater) {
-            highWater = t
-            writeHighWater(t)
+        highWater = t
+        // Throttled persistence. highWater only advances here, and a tick
+        // that advanced it by >= PERSIST_THROTTLE_MS since the last write
+        // persists synchronously — so at every completed tick,
+        // highWater - (last persisted value) < PERSIST_THROTTLE_MS. That
+        // strict bound is what makes the resume arithmetic above airtight:
+        // no observed pre-crash value can exceed persisted + throttle.
+        // (lastWriteAt <= t always: highWater is non-decreasing, so the
+        // subtraction cannot overflow.)
+        if (lastWriteAt == null || t - lastWriteAt!! >= PERSIST_THROTTLE_MS) {
+            persist(t)
+            lastWriteAt = t
         }
         return t
     }
