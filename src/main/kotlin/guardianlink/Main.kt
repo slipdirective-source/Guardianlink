@@ -10,6 +10,7 @@ import guardianlink.friction.FrictionStateMachine
 import guardianlink.integrity.DeviceIntegrityTier
 import guardianlink.mfa.ShamirMfa
 import guardianlink.policy.PolicyEngine
+import guardianlink.policy.RailAuthorizer
 import guardianlink.gates.Action
 import guardianlink.gates.Assent
 import guardianlink.gates.FakeClock
@@ -19,13 +20,13 @@ import guardianlink.gates.KeyMaterial
 import guardianlink.gates.NineGates
 import guardianlink.gates.Proofs
 import guardianlink.gates.Rails
+import guardianlink.gates.ReferenceTransition
 import guardianlink.gates.Revocation
 import guardianlink.gates.Signal
 import guardianlink.gates.SubstrateState
 import guardianlink.gates.Verifiers
 import guardianlink.gates.render
 import guardianlink.trajectory.TrajectoryEstimator
-import java.time.Instant
 
 fun main() {
     println("=" * 72)
@@ -33,10 +34,13 @@ fun main() {
     println("=" * 72)
     println()
 
-    // Initialize core modules
-    val policyEngine = PolicyEngine()
+    // Initialize core modules. The demo uses a permissive rail authorizer;
+    // production deployments MUST supply real authentication here.
+    val policyEngine = PolicyEngine(authorizer = RailAuthorizer.PERMISSIVE)
     val auditLog = MerkleAuditLog { rootHash, index ->
-        println("[AUDIT] Merkle root checkpoint at entry $index: $rootHash")
+        // DEMO ONLY: printing is not a durable external anchor. A real
+        // deployment must publish each root to a write-once store.
+        println("[AUDIT] Merkle root checkpoint at entry $index: $rootHash (NOT durably anchored — demo only)")
     }
 
     val concierge = ConciergeInterface(policyEngine, auditLog)
@@ -47,10 +51,10 @@ fun main() {
     val hardRail = friction.createHardRail("data-deletion-rail", baseCoolingOffMs = 5000L)
     println("Created hard rail: ${hardRail.id} (type=${hardRail.type}, state=${hardRail.state})")
 
-    val mod1 = friction.requestModification("data-deletion-rail", 5000L, Instant.now())
+    val mod1 = friction.requestModification("data-deletion-rail", 5000L)
     println("Modification attempt 1: success=${mod1.success}, escalation=${mod1.rail?.anomalyEscalationCount}")
 
-    val mod2 = friction.requestModification("data-deletion-rail", 5000L, Instant.now())
+    val mod2 = friction.requestModification("data-deletion-rail", 5000L)
     println("Modification attempt 2 (while cooling): success=${mod2.success}, escalation=${mod2.rail?.anomalyEscalationCount}")
     println()
 
@@ -161,18 +165,12 @@ private fun runNineGatesDemo() {
         override fun policyRules(action: Action, substrate: SubstrateState) = true
         override fun governanceDivergence(action: Action) = 0.0
         override fun metaLoopConsistent(context: GateContext) = true
-        override fun applyAction(substrate: SubstrateState, action: Action): SubstrateState {
-            return when (action) {
-                is Action.Write -> {
-                    val rec = substrate.records[action.recordId] ?: return substrate
-                    substrate.copy(records = substrate.records + (action.recordId to (rec + action.fields)))
-                }
-                is Action.Delete -> substrate.copy(records = substrate.records - action.recordId)
-                is Action.Read -> substrate
-                is Action.Sequence -> action.steps.fold(substrate, ::applyAction)
-                is Action.Guarded -> applyAction(substrate, action.then)
-            }
-        }
+        override fun applyAction(substrate: SubstrateState, action: Action): SubstrateState =
+            // Canonical reference semantics (see ReferenceTransition): the
+            // demo used to always take the `then` branch of Guarded,
+            // ignoring the condition — a fail-open adapter bug. Fixed by
+            // sharing the one canonical evaluator.
+            ReferenceTransition.apply(substrate, action)
     }
     val gates = NineGates(rails, verifiers)
     val clock = FakeClock(t = 60_000L)
