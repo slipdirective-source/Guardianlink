@@ -163,4 +163,24 @@ class PolicyEngineTest {
         allowed = setOf("yes")
         assertTrue(engine.registerHardRail("yes"))
     }
+
+    @Test
+    fun testCallerSetMutationDoesNotArmRail() {
+        // Round-2: the constructor retained the caller's MutableSet, so anyone
+        // holding the reference could arm/disarm rails past the authorizer.
+        // The engine must copy the set; external mutation changes nothing.
+        val smuggled = mutableSetOf<String>()
+        val engine = PolicyEngine(activeHardRails = smuggled) // default DENY_ALL
+        smuggled.add("ghost-rail")
+        val decision = engine.evaluate(
+            requestedTier = PolicyEngine.Tier.HARD_ENFORCE,
+            hardRailRef = "ghost-rail",
+            deviceIntegrity = DeviceIntegrityTier.Level.VERIFIED,
+            context = "smuggle test"
+        )
+        assertTrue(
+            decision is PolicyEngine.EnforcementDecision.Denied,
+            "mutating the constructor set must not arm a rail, got: $decision"
+        )
+    }
 }
