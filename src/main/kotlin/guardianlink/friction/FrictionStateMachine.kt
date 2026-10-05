@@ -46,6 +46,10 @@ class FrictionStateMachine(
     }
 
     fun createHardRail(id: String, baseCoolingOffMs: Long): Rail {
+        // baseCoolingOffMs is reserved for future use (the window is set per
+        // requestModification call); validated anyway so a negative value
+        // cannot silently become meaningful later.
+        require(baseCoolingOffMs >= 0) { "baseCoolingOffMs must be >= 0" }
         val rail = Rail(
             id = id,
             type = RailType.HARD_RAIL,
@@ -76,6 +80,9 @@ class FrictionStateMachine(
         id: String,
         baseCoolingOffMs: Long
     ): TransitionResult {
+        // A negative base would place coolingOffUntilMs in the past and let
+        // finalizeModification succeed immediately — a cooling bypass.
+        require(baseCoolingOffMs >= 0) { "baseCoolingOffMs must be >= 0" }
         val ref = rails[id] ?: return TransitionResult(success = false, rail = null)
 
         while (true) {
@@ -89,13 +96,28 @@ class FrictionStateMachine(
 
             // Capped separately: only the backoff *multiplier* needs a ceiling, so
             // the cooling-off window doesn't grow unbounded on paper while still
-            // reflecting true attempt count in the stored field.
-            val cappedForBackoff = minOf(escalation, 6)
-            val extendedCoolingOff = baseCoolingOffMs * (1L shl cappedForBackoff)
+            // reflecting true attempt count in the stored field. Clamped at both
+            // ends: a negative escalation (Int overflow after 2^31 retries) must
+            // not reach the shift below.
+            val cappedForBackoff = minOf(6, maxOf(0, escalation))
+            // Saturating: baseCoolingOffMs * 64 overflows Long for bases above
+            // ~1.4e17, and nowMs + window overflows for huge windows. Wrapping
+            // would place coolingOffUntilMs in the past — an instant cooling
+            // bypass. Saturation extends the window instead, fail-closed.
+            val extendedCoolingOff = try {
+                Math.multiplyExact(baseCoolingOffMs, 1L shl cappedForBackoff)
+            } catch (_: ArithmeticException) {
+                Long.MAX_VALUE
+            }
+            val coolingOffUntil = try {
+                Math.addExact(nowMs, extendedCoolingOff)
+            } catch (_: ArithmeticException) {
+                Long.MAX_VALUE
+            }
 
             val updated = prior.copy(
                 state = RailState.COOLING_OFF,
-                coolingOffUntilMs = nowMs + extendedCoolingOff,
+                coolingOffUntilMs = coolingOffUntil,
                 monotonicStamp = nextTick(),
                 anomalyEscalationCount = escalation  // uncapped, stored as-is
             )
