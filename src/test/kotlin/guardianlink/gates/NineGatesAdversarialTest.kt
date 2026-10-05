@@ -34,6 +34,7 @@ class NineGatesAdversarialTest {
         var loopOk: Boolean = true,
         var throwPorts: Set<String> = emptySet(),
         var evilApply: ((SubstrateState, Action) -> SubstrateState)? = null,
+        var applyCalls: Int = 0,
     ) : Verifiers {
         private fun maybeThrow(port: String) {
             if (port in throwPorts) throw RuntimeException("hostile port: $port")
@@ -72,6 +73,7 @@ class NineGatesAdversarialTest {
         }
 
         override fun applyAction(substrate: SubstrateState, action: Action): SubstrateState {
+            applyCalls++
             maybeThrow("apply")
             return evilApply?.invoke(substrate, action) ?: benignApply(substrate, action)
         }
@@ -713,6 +715,44 @@ class NineGatesAdversarialTest {
         )
         assertEquals(6, h.atGate)
         assertTrue(h.reason.contains("psi_inv"), h.reason)
+    }
+
+    // ------------------------------------------------------------------
+    // Single evaluation: the transition adapter is invoked EXACTLY once per
+    // evaluate(). A stateful adapter must not validate one result and seal
+    // another (Copilot HIGH).
+    // ------------------------------------------------------------------
+
+    @Test
+    fun transitionEvaluatedExactlyOnceOnFullPass() {
+        val v = FuzzVerifiers()
+        val out = NineGates(rails, v).evaluate(passing(Action.Write("profile", mapOf("name" to "Neo"))))
+        assertTrue(out is GateOutcome.Integrated, "expected Integrated but was $out")
+        assertEquals(1, v.applyCalls, "transition evaluated ${v.applyCalls}x, must be exactly once")
+    }
+
+    @Test
+    fun flipFloppingAdapterCannotSwapSealedState() {
+        // First call returns state X (validated by Gate 6/8); a second call
+        // would return state Y. Single evaluation seals X — the validated one.
+        val v = FuzzVerifiers()
+        val xState = SubstrateState(mapOf("profile" to mapOf("name" to "X")))
+        val yState = SubstrateState(mapOf("profile" to mapOf("name" to "Y")))
+        var calls = 0
+        v.evilApply = { _, _ -> calls++; if (calls == 1) xState else yState }
+        val out = NineGates(rails, v).evaluate(passing(Action.Write("profile", mapOf("name" to "Z"))))
+        val sealed = assertIntegrated(out).newSubstrate
+        assertEquals(1, v.applyCalls, "adapter invoked more than once")
+        assertEquals("X", sealed.records["profile"]?.get("name"),
+            "sealed state is not the validated state")
+    }
+
+    @Test
+    fun throwingTransitionHaltsWithoutSecondEvaluation() {
+        val v = FuzzVerifiers(throwPorts = setOf("apply"))
+        val out = NineGates(rails, v).evaluate(passing(Action.Read("profile", listOf("name"))))
+        assertTrue(out is GateOutcome.Halted, "throwing transition ESCAPED")
+        assertEquals(1, v.applyCalls, "throwing adapter was retried")
     }
 
     // ------------------------------------------------------------------
