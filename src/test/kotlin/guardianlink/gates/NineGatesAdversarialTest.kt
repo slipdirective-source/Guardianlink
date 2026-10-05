@@ -77,29 +77,9 @@ class NineGatesAdversarialTest {
         override fun applyAction(substrate: SubstrateState, action: Action): SubstrateState {
             applyCalls++
             maybeThrow("apply")
-            return evilApply?.invoke(substrate, action) ?: benignApply(substrate, action)
-        }
-
-        private fun benignApply(substrate: SubstrateState, action: Action): SubstrateState {
-            fun cond(c: Condition, s: SubstrateState): Boolean = when (c) {
-                is Condition.FieldEquals -> s.records[c.recordId]?.get(c.field) == c.expected
-                is Condition.And -> c.parts.all { cond(it, s) }
-                is Condition.Not -> !cond(c.inner, s)
-            }
-            fun step(s: SubstrateState, a: Action): SubstrateState = when (a) {
-                is Action.Read -> s
-                is Action.Write -> {
-                    val rec = s.records[a.recordId]
-                    if (rec == null) s
-                    else s.copy(records = s.records + (a.recordId to (rec + a.fields)))
-                }
-                is Action.Delete -> s.copy(records = s.records - a.recordId)
-                is Action.Sequence -> a.steps.fold(s, ::step)
-                is Action.Guarded ->
-                    if (cond(a.condition, s)) step(s, a.then)
-                    else a.otherwise?.let { step(s, it) } ?: s
-            }
-            return step(substrate, action)
+            // Canonical reference semantics — shared with the demo (see
+            // ReferenceTransition). The harness must not disagree with it.
+            return evilApply?.invoke(substrate, action) ?: ReferenceTransition.apply(substrate, action)
         }
     }
 
@@ -852,6 +832,54 @@ class NineGatesAdversarialTest {
         } finally {
             f.delete()
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Guarded semantics: the demo and the test harness previously
+    // DISAGREED (demo always took `then`). Both now delegate to
+    // ReferenceTransition; this locks the agreed semantics in.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun guardedSemanticsAgreement() {
+        val s = SubstrateState(mapOf("profile" to mapOf("role" to "admin")))
+        val condTrue = Condition.FieldEquals("profile", "role", "admin")
+        val condFalse = Condition.FieldEquals("profile", "role", "user")
+        val then = Action.Write("profile", mapOf("role" to "then"))
+        val otherwise = Action.Write("profile", mapOf("role" to "else"))
+
+        // True condition -> then branch.
+        assertEquals("then", ReferenceTransition.apply(s, Action.Guarded(condTrue, then, otherwise))
+            .records["profile"]?.get("role"))
+        // False condition -> otherwise branch.
+        assertEquals("else", ReferenceTransition.apply(s, Action.Guarded(condFalse, then, otherwise))
+            .records["profile"]?.get("role"))
+        // False condition, no otherwise -> no-op.
+        assertEquals("admin", ReferenceTransition.apply(s, Action.Guarded(condFalse, then, null))
+            .records["profile"]?.get("role"))
+        // Nested conditions thread substrate state through sequences:
+        // the Write flips role to "user", so condFalse now HOLDS -> then.
+        val nested = Action.Sequence(listOf(
+            Action.Write("profile", mapOf("role" to "user")),
+            Action.Guarded(condFalse, then, otherwise),
+        ))
+        assertEquals("then", ReferenceTransition.apply(s, nested).records["profile"]?.get("role"))
+    }
+
+    @Test
+    fun guardedEndToEndThroughGates() {
+        // A Guarded whose condition is false must execute `otherwise`,
+        // and the sealed substrate must reflect it (single evaluation).
+        val v = FuzzVerifiers()
+        val action = Action.Guarded(
+            Condition.FieldEquals("profile", "name", "Nobody"),
+            Action.Write("profile", mapOf("name" to "Then")),
+            Action.Write("profile", mapOf("name" to "Else")),
+        )
+        val out = NineGates(rails, v).evaluate(passing(action))
+        val sealed = assertIntegrated(out).newSubstrate
+        assertEquals("Else", sealed.records["profile"]?.get("name"))
+        assertEquals(1, v.applyCalls)
     }
 
     // ------------------------------------------------------------------
