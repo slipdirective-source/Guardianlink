@@ -3,6 +3,7 @@ package guardianlink.audit
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class MerkleAuditLogTest {
@@ -184,5 +185,22 @@ class MerkleAuditLogTest {
         val field = MerkleAuditLog::class.java.getDeclaredField("currentRoot")
         field.isAccessible = true
         field.set(log, v)
+    }
+
+    @Test
+    fun testLastAppendMsNullWhenEmpty() {
+        assertNull(MerkleAuditLog().lastAppendMs())
+    }
+
+    @Test
+    fun testLastAppendMsTracksMaxOfAppends() {
+        val l = MerkleAuditLog()
+        l.append("a".toByteArray(), java.time.Instant.ofEpochMilli(1000L))
+        assertEquals(1000L, l.lastAppendMs())
+        // Backward clock jump must not regress the marker.
+        l.append("b".toByteArray(), java.time.Instant.ofEpochMilli(500L))
+        assertEquals(1000L, l.lastAppendMs())
+        l.append("c".toByteArray(), java.time.Instant.ofEpochMilli(2000L))
+        assertEquals(2000L, l.lastAppendMs())
     }
 }
