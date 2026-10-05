@@ -2,8 +2,32 @@ package guardianlink.policy
 
 import guardianlink.integrity.DeviceIntegrityTier
 
+/**
+ * Authorization hook for hard-rail lifecycle.
+ *
+ * TRUST BOUNDARY: hard-rail registration/revocation is a privileged
+ * operation. Production deployments MUST supply an authorizer backed by
+ * real authentication (capability tokens, signed admin commands, hardware
+ * attestation). The default [DENY_ALL] denies every lifecycle call — an
+ * engine constructed without an authorizer cannot arm any hard rail, which
+ * is the fail-closed posture. Demos and tests pass an explicit permissive
+ * authorizer; that is never deployment-safe.
+ */
+fun interface RailAuthorizer {
+    enum class RailAction { REGISTER, REVOKE }
+    fun authorized(action: RailAction, railId: String): Boolean
+
+    companion object {
+        val DENY_ALL: RailAuthorizer = RailAuthorizer { _, _ -> false }
+
+        /** Demo/test only. Never use in production. */
+        val PERMISSIVE: RailAuthorizer = RailAuthorizer { _, _ -> true }
+    }
+}
+
 class PolicyEngine(
-    private val activeHardRails: MutableSet<String> = mutableSetOf()
+    private val activeHardRails: MutableSet<String> = mutableSetOf(),
+    private val authorizer: RailAuthorizer = RailAuthorizer.DENY_ALL,
 ) {
     enum class Tier { EVIDENCE_ONLY, SOFT_ADVISORY, HARD_ENFORCE }
 
@@ -14,12 +38,24 @@ class PolicyEngine(
         data class Denied(val reason: String) : EnforcementDecision()
     }
 
-    fun registerHardRail(id: String) {
+    /**
+     * Arm a hard rail. Returns false (and changes nothing) when the
+     * authorizer denies the call — registration is never unauthenticated.
+     */
+    fun registerHardRail(id: String): Boolean {
+        if (!authorizer.authorized(RailAuthorizer.RailAction.REGISTER, id)) return false
         activeHardRails.add(id)
+        return true
     }
 
-    fun revokeHardRail(id: String) {
+    /**
+     * Disarm a hard rail. Returns false (and changes nothing) when the
+     * authorizer denies the call.
+     */
+    fun revokeHardRail(id: String): Boolean {
+        if (!authorizer.authorized(RailAuthorizer.RailAction.REVOKE, id)) return false
         activeHardRails.remove(id)
+        return true
     }
 
     fun evaluate(
