@@ -6,7 +6,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class PolicyEngineTest {
-    private val engine = PolicyEngine()
+    // Tests exercise enforcement logic with an explicit permissive
+    // authorizer; authorization-denial is tested separately below.
+    private val engine = PolicyEngine(authorizer = RailAuthorizer.PERMISSIVE)
 
     @Test
     fun testEvidenceOnlyAlwaysSucceeds() {
@@ -116,5 +118,49 @@ class PolicyEngineTest {
             context = "test"
         )
         assertTrue(decision is PolicyEngine.EnforcementDecision.Denied)
+    }
+
+    // ------------------------------------------------------------------
+    // Rail lifecycle authorization: unauthenticated registration/revocation
+    // is denied by default (fail-closed).
+    // ------------------------------------------------------------------
+
+    @Test
+    fun testRegisterDeniedWithoutAuthorizer() {
+        val locked = PolicyEngine() // DENY_ALL by default
+        assertEquals(false, locked.registerHardRail("sneaky"))
+        val decision = locked.evaluate(
+            requestedTier = PolicyEngine.Tier.HARD_ENFORCE,
+            hardRailRef = "sneaky",
+            deviceIntegrity = DeviceIntegrityTier.Level.VERIFIED,
+            context = "test"
+        )
+        assertTrue(decision is PolicyEngine.EnforcementDecision.Denied)
+    }
+
+    @Test
+    fun testRevokeDeniedWithoutAuthorizer() {
+        val locked = PolicyEngine(authorizer = RailAuthorizer { action, _ ->
+            action == RailAuthorizer.RailAction.REGISTER
+        })
+        assertTrue(locked.registerHardRail("sticky"))
+        assertEquals(false, locked.revokeHardRail("sticky"))
+        // Rail still armed: the denied revoke changed nothing.
+        val decision = locked.evaluate(
+            requestedTier = PolicyEngine.Tier.HARD_ENFORCE,
+            hardRailRef = "sticky",
+            deviceIntegrity = DeviceIntegrityTier.Level.VERIFIED,
+            context = "test"
+        )
+        assertTrue(decision is PolicyEngine.EnforcementDecision.Enforce)
+    }
+
+    @Test
+    fun testSelectiveAuthorizer() {
+        var allowed = setOf<String>()
+        val engine = PolicyEngine(authorizer = RailAuthorizer { _, railId -> railId in allowed })
+        assertEquals(false, engine.registerHardRail("nope"))
+        allowed = setOf("yes")
+        assertTrue(engine.registerHardRail("yes"))
     }
 }
