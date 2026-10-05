@@ -1,9 +1,22 @@
 package guardianlink.friction
 
-import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 
-class FrictionStateMachine {
+/**
+ * Friction state machine: cooling-off rails for high-stakes modifications.
+ *
+ * TIME TRUST BOUNDARY: all time comes from the injected [clock] (epoch ms).
+ * Callers MUST inject a monotonic source — a wall clock that jumps backward
+ * shortens cooling windows (fail-open direction). As defense in depth the
+ * machine additionally holds a monotonic high-water mark internally, so a
+ * backward jump can never shorten an already-started window; it can only
+ * delay this machine's own view of time. There is deliberately no
+ * caller-supplied timestamp parameter: time is a capability of the
+ * deployment, not an argument of the request.
+ */
+class FrictionStateMachine(
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
 
     enum class RailType { SOFT_RULE, HARD_RAIL }
     enum class RailState { ACTIVE, COOLING_OFF, MODIFIABLE }
@@ -21,6 +34,16 @@ class FrictionStateMachine {
 
     private val rails = mutableMapOf<String, AtomicReference<Rail>>()
     private var monotonicCounter = 0L
+
+    // Monotonic high-water mark for the injected clock (see class KDoc).
+    private var lastNowMs = 0L
+
+    @Synchronized
+    private fun nowMs(): Long {
+        val t = clock()
+        if (t > lastNowMs) lastNowMs = t
+        return lastNowMs
+    }
 
     fun createHardRail(id: String, baseCoolingOffMs: Long): Rail {
         val rail = Rail(
@@ -51,14 +74,13 @@ class FrictionStateMachine {
 
     fun requestModification(
         id: String,
-        baseCoolingOffMs: Long,
-        now: Instant = Instant.now()
+        baseCoolingOffMs: Long
     ): TransitionResult {
         val ref = rails[id] ?: return TransitionResult(success = false, rail = null)
 
         while (true) {
             val prior = ref.get()
-            val nowMs = now.toEpochMilli()
+            val nowMs = nowMs()
 
             // Uncapped: this is the true retry-pressure count and belongs in the
             // audit trail as-is (evidence-only fidelity — don't clamp what actually
@@ -84,7 +106,7 @@ class FrictionStateMachine {
         }
     }
 
-    fun finalizeModification(id: String, now: Instant = Instant.now()): TransitionResult {
+    fun finalizeModification(id: String): TransitionResult {
         val ref = rails[id] ?: return TransitionResult(success = false, rail = null)
 
         while (true) {
@@ -92,7 +114,7 @@ class FrictionStateMachine {
             if (prior.state != RailState.COOLING_OFF) {
                 return TransitionResult(success = false, rail = prior, conflict = true)
             }
-            val nowMs = now.toEpochMilli()
+            val nowMs = nowMs()
             if (nowMs < prior.coolingOffUntilMs) {
                 return TransitionResult(success = false, rail = prior)
             }
