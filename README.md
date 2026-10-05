@@ -17,13 +17,33 @@ Locally: ./gradlew build test (requires JDK 17+).
 The algorithmic core of every bug-prone module (Merkle checkpointing, MAD shift
 detection, CAS concurrency, Shamir reconstruction, PolicyEngine fail-closed
 invariant) was verified via adversarial Python-ported test batches before this
-Kotlin code was written, confirming the logic is sound. The Kotlin itself has been
-manually audited (brace/paren balance, import/package consistency) but not yet
-compiler-verified — first CI run will confirm.
+Kotlin code was written, confirming the logic is sound. The Kotlin itself is
+compiler-verified (kotlinc 1.9.22, JDK 17) with a 130+ test suite run
+locally plus CI (`.github/workflows/ci.yml`) and CodeQL
+(`.github/workflows/codeql.yml`) on every push.
 
 Not included (expansion-path, not v1 core): MinorProfile adapter,
 HierarchicalOversight adapter, hardware Keystore/AES-GCM bindings (Android-target
 specific), aggregate research/consent-bundle layer.
+
+## Trust boundaries & adapter requirements
+
+This scaffold is **fail-closed against hostile inputs** (fuzz-tested: NaN/Inf
+numerics, throwing verifiers, hostile clocks, AST smuggling, share injection).
+What it does **not** do yet is verify the *truth* of what callers tell it.
+Until the adapters below exist, the engine checks **consistency of caller
+claims, not truth**:
+
+| Claim source | What the engine checks | What it does NOT check (adapter required) |
+|---|---|---|
+| `GateContext` evidence (biometric vectors, SNR, entropy, parse trees, proof bytes) | Internal consistency, bounds, finiteness | That the values are true — a caller can supply self-consistent lies |
+| `Verifiers` ports (signatures, ZK, assent, revocation, policy) | Totality (throw → halt), boolean outcomes | Cryptographic validity itself — real signature/ZK/attestation adapters required |
+| Shamir share categories | Share math (field ranges, no dup x, threshold, mandatory HW label) | That a share labeled `HARDWARE_BIOMETRIC` really came from hardware — attestation binding + VSS commitments required |
+| Trajectory samples | Finiteness, magnitude bounds, self-consistency, windowed anomalies | That samples are authentic — signed/attested sensor streams required |
+| Merkle ledger | Tamper-evidence within the process | Immutability — requires a **durable external anchor** (write-once store / timestamping authority); the demo anchor only prints |
+| Revocation scan | All revocations known at Gate 8 + seal time | Revocations issued after `evaluate()` returns but before the caller commits — callers MUST re-scan at commit or hold a commit lock |
+| `PolicyEngine` rail lifecycle | Authorization hook (`RailAuthorizer`, default deny-all) | Real authentication — capability tokens / signed admin commands required in production |
+| `FrictionStateMachine` time | Injected clock + backward-jump high-water mark | The clock being truly monotonic — deployments must inject a monotonic source |
 
 ## Nine Gates policy core (`guardianlink.gates`)
 
@@ -40,5 +60,6 @@ Executable model of the Global Master Codex v2.2 Nine Gates FSM
   window scaling with AST-computed impact, signed revocation until seal.
 - Gate 8: prepare-then-commit — `applyAction` is pure, the caller commits
   by adopting `GateOutcome.Integrated.newSubstrate`. The seal is never post-hoc.
-- 20 tests in `NineGatesTest` cover every gate's halt path, cooling
-  scaling, revocation, and ledger appends. Demo in `Main.kt`.
+- 130+ tests in `NineGatesTest` / `NineGatesAdversarialTest` cover every gate's
+  halt path, cooling scaling, revocation, ledger appends, render injectivity,
+  and single-evaluation. Demo in `Main.kt`.
