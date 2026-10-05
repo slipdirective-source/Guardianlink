@@ -2,6 +2,7 @@ package guardianlink.friction
 
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -123,6 +124,35 @@ class FrictionStateMachineTest {
         val rail = fsm.getRail("get-rail")
         assertNotNull(rail)
         assertEquals("get-rail", rail.id)
+    }
+
+    @Test
+    fun testNegativeCoolingBaseRejected() {
+        // Round-2: a negative base placed coolingOffUntilMs in the past,
+        // letting finalizeModification succeed immediately (cooling bypass).
+        fsm.createHardRail("neg-rail", 1000L)
+        assertFailsWith<IllegalArgumentException> {
+            fsm.requestModification("neg-rail", -1L)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            fsm.createHardRail("neg-create", -5L)
+        }
+    }
+
+    @Test
+    fun testOverflowingCoolingBaseStaysCooling() {
+        // Round-2: base * 64 overflowed Long and wrapped the window into the
+        // past — an instant cooling bypass. Saturation must keep the rail
+        // cooling essentially forever instead.
+        fsm.createHardRail("huge-rail", 1000L)
+        val mod = fsm.requestModification("huge-rail", Long.MAX_VALUE)
+        assertTrue(mod.success)
+        val fin = fsm.finalizeModification("huge-rail")
+        assertFalse(fin.success, "overflowing cooling window must not finalize")
+        assertEquals(
+            FrictionStateMachine.RailState.COOLING_OFF,
+            fsm.getRail("huge-rail")?.state
+        )
     }
 
     @Test
