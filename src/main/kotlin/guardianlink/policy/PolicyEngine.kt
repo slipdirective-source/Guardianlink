@@ -26,9 +26,14 @@ fun interface RailAuthorizer {
 }
 
 class PolicyEngine(
-    private val activeHardRails: MutableSet<String> = mutableSetOf(),
+    activeHardRails: MutableSet<String> = mutableSetOf(),
     private val authorizer: RailAuthorizer = RailAuthorizer.DENY_ALL,
 ) {
+    // Defensive copy: the caller-owned set must not be an unauthenticated
+    // side channel. Without the copy, whoever holds the reference passed
+    // here could arm or disarm hard rails by mutating it directly,
+    // bypassing the authorizer entirely.
+    private val activeHardRails: MutableSet<String> = activeHardRails.toMutableSet()
     enum class Tier { EVIDENCE_ONLY, SOFT_ADVISORY, HARD_ENFORCE }
 
     sealed class EnforcementDecision {
