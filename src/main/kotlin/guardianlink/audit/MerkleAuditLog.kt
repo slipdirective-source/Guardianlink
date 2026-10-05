@@ -5,6 +5,29 @@ import java.time.Instant
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
+/**
+ * Merkle-chained audit ledger (Codex v2.2, Gate 8, theta_merkle).
+ *
+ * TRUST BOUNDARY — read this before relying on the log:
+ *
+ * 1. Tamper-EVIDENT, not tamper-PROOF. Within one process the hash chain
+ *    detects modification, truncation, or reordering. Against an attacker
+ *    who controls the process memory or the whole machine, no in-process
+ *    structure can promise immutability.
+ * 2. "Immutable seal" requires a DURABLE EXTERNAL ANCHOR: each new root
+ *    must be published to a write-once / independently timestamped store
+ *    (transparency log, timestamping authority, anchored chain). The
+ *    [externalAnchor] callback is that hook — the demo anchor only prints,
+ *    which anchors nothing. Deployments MUST wire a real anchor.
+ * 3. Entry timestamps are wall-clock ([Instant]) for human audit only.
+ *    They are caller-supplied and MUST NOT feed security decisions; every
+ *    security time predicate in the Nine Gates uses tau ([MonotonicClock]).
+ *
+ * Hashing uses domain separation: leaf, internal node, and genesis hashes
+ * are computed over distinct prefixes, so a leaf preimage can never be
+ * mistaken for an internal node (second-preimage resistance across levels).
+ * Odd levels duplicate the last leaf (standard Merkle padding).
+ */
 class MerkleAuditLog(
     private val externalAnchor: ((rootHash: String, atEntryIndex: Int) -> Unit)? = null
 ) {
@@ -18,45 +41,68 @@ class MerkleAuditLog(
     private val lock = ReentrantLock()
     private val entries = mutableListOf<Entry>()
     private val leafHashes = mutableListOf<String>()
-    private var currentRoot: String = sha256("GENESIS")
+    private var currentRoot: String = genesisRoot()
 
     val size: Int get() = lock.withLock { entries.size }
     val root: String get() = lock.withLock { currentRoot }
 
-    fun append(payload: ByteArray, now: Instant = Instant.now()): Entry = lock.withLock {
-        val payloadHash = sha256(payload)
-        val entry = Entry(
-            index = entries.size,
-            timestampEpochMs = now.toEpochMilli(),
-            payloadHash = payloadHash,
-            previousRoot = currentRoot
-        )
-        entries.add(entry)
-        leafHashes.add(sha256("${entry.index}|${entry.timestampEpochMs}|${entry.payloadHash}|${entry.previousRoot}"))
-
-        currentRoot = computeRoot(leafHashes)
-        externalAnchor?.invoke(currentRoot, entry.index)
-
-        entry
+    fun append(payload: ByteArray, now: Instant = Instant.now()): Entry {
+        // Build the entry and advance the chain under the lock...
+        val (entry, rootAfter) = lock.withLock {
+            val payloadHash = sha256(payload)
+            val entry = Entry(
+                index = entries.size,
+                timestampEpochMs = now.toEpochMilli(),
+                payloadHash = payloadHash,
+                previousRoot = currentRoot
+            )
+            entries.add(entry)
+            leafHashes.add(leafHash(entry))
+            currentRoot = computeRoot(leafHashes)
+            Pair(entry, currentRoot)
+        }
+        // ...but invoke the external anchor OUTSIDE the lock. A callback
+        // that appends reentrantly would otherwise interleave before this
+        // entry's anchor call fires, publishing roots out of order. Outside
+        // the lock, ordering is strict: anchor(i) always precedes anchor(i+1).
+        // An anchor exception propagates to the caller: the entry IS recorded
+        // locally, but external durability failed — the caller must handle it.
+        externalAnchor?.invoke(rootAfter, entry.index)
+        return entry
     }
 
+    /**
+     * Full integrity verification. Returns -1 when the log is intact,
+     * otherwise the index of the first failing entry — or [size] when every
+     * entry is well-formed but [currentRoot] does not match the recomputed
+     * root (in-memory root tampering).
+     *
+     * Checks, in order: leaf-hash recomputation per entry, genesis linkage
+     * of entry 0 (previousRoot == genesis), chaining of every subsequent
+     * entry against the checkpoint root before it, and finally currentRoot
+     * against a full recomputation.
+     */
     fun verifyIntegrity(): Int = lock.withLock {
         for (i in entries.indices) {
             val e = entries[i]
-            val recomputed = sha256("${e.index}|${e.timestampEpochMs}|${e.payloadHash}|${e.previousRoot}")
-            if (recomputed != leafHashes[i]) return i
-            if (i > 0 && e.previousRoot != rootAtCheckpoint(i - 1)) return i
+            if (leafHash(e) != leafHashes[i]) return i
+            val expectedPrev = if (i == 0) genesisRoot() else rootAtCheckpointLocked(i - 1)
+            if (e.previousRoot != expectedPrev) return i
         }
+        if (computeRoot(leafHashes) != currentRoot) return entries.size
         return -1
     }
 
     fun rootAtCheckpoint(index: Int): String = lock.withLock {
         require(index in entries.indices) { "index out of range" }
-        computeRoot(leafHashes.subList(0, index + 1))
+        rootAtCheckpointLocked(index)
     }
 
+    private fun rootAtCheckpointLocked(index: Int): String =
+        computeRoot(leafHashes.subList(0, index + 1))
+
     private fun computeRoot(leaves: List<String>): String {
-        if (leaves.isEmpty()) return sha256("GENESIS")
+        if (leaves.isEmpty()) return genesisRoot()
         var level = leaves.toMutableList()
         while (level.size > 1) {
             val next = mutableListOf<String>()
@@ -64,13 +110,21 @@ class MerkleAuditLog(
             while (i < level.size) {
                 val left = level[i]
                 val right = if (i + 1 < level.size) level[i + 1] else left
-                next.add(sha256(left + right))
+                next.add(nodeHash(left, right))
                 i += 2
             }
             level = next
         }
         return level.first()
     }
+
+    private fun genesisRoot(): String = sha256("GUARDIANLINK-MERKLE/GENESIS/v1".toByteArray(Charsets.UTF_8))
+
+    private fun leafHash(e: Entry): String =
+        sha256("GUARDIANLINK-MERKLE/LEAF/v1|${e.index}|${e.timestampEpochMs}|${e.payloadHash}|${e.previousRoot}")
+
+    private fun nodeHash(left: String, right: String): String =
+        sha256("GUARDIANLINK-MERKLE/NODE/v1|$left|$right")
 
     private fun sha256(s: String): String = sha256(s.toByteArray(Charsets.UTF_8))
     private fun sha256(bytes: ByteArray): String =
