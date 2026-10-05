@@ -110,10 +110,10 @@ class NineGatesTest {
     @Test
     fun testRenderIsCanonical() {
         assertEquals(
-            "WRITE r {a=1,b=2}",
+            "WRITE \"r\" {\"a\"=\"1\",\"b\"=\"2\"}",
             render(Action.Write("r", mapOf("b" to "2", "a" to "1")))
         )
-        assertEquals("DELETE r", render(Action.Delete("r")))
+        assertEquals("DELETE \"r\"", render(Action.Delete("r")))
     }
 
     @Test
