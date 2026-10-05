@@ -6,6 +6,15 @@ import guardianlink.audit.MerkleAuditLog
  * sigma — the global system state vector (Codex v2.2, §II).
  *
  * sigma = ( eta, kappa, pi, S_entropy, c, a, x, M, r, s_a, tau )
+ *
+ * TRUST BOUNDARY: every evidence field in this context (signal payload/SNR,
+ * biometric templates, proof bytes, entropy bits, parse-tree count, intent
+ * vectors, revocation list) is CALLER-SUPPLIED. The gates check these values
+ * for internal consistency, bounds, and finiteness — they do not and cannot
+ * verify their truth. A caller that supplies self-consistent false evidence
+ * passes the consistency checks; detecting that requires real adapters
+ * (attested sensors, signature verification, ZK proof systems) behind the
+ * Verifiers ports. See README "Trust boundaries & adapter requirements".
  */
 data class GateContext(
     /** eta: raw signal payload + measured SNR + well-formedness. */
