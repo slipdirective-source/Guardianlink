@@ -46,6 +46,23 @@ class MerkleAuditLog(
     val size: Int get() = lock.withLock { entries.size }
     val root: String get() = lock.withLock { currentRoot }
 
+    /**
+     * Epoch-ms of the most recent append, or null when the ledger is empty.
+     *
+     * Recorded as the max over all observed append times (high-water mark):
+     * a backward jump of the caller-supplied `now` cannot regress the
+     * marker, so a clock glitch can neither erase recorded liveness nor
+     * manufacture it beyond what was observed.
+     *
+     * TRUST BOUNDARY: `now` is caller-supplied per append. A caller that
+     * forges future-dated appends defeats any silence-based check built on
+     * this value — the same forgery defeats the audit trail itself. The
+     * recourse is the durable external anchor, not this marker.
+     */
+    private var lastAppendEpochMs: Long? = null
+
+    fun lastAppendMs(): Long? = lock.withLock { lastAppendEpochMs }
+
     fun append(payload: ByteArray, now: Instant = Instant.now()): Entry {
         // Build the entry and advance the chain under the lock...
         val (entry, rootAfter) = lock.withLock {
@@ -59,6 +76,9 @@ class MerkleAuditLog(
             entries.add(entry)
             leafHashes.add(leafHash(entry))
             currentRoot = computeRoot(leafHashes)
+            // High-water liveness marker (see lastAppendMs): max() so a
+            // backward jump of the caller-supplied `now` cannot regress it.
+            lastAppendEpochMs = maxOf(lastAppendEpochMs ?: Long.MIN_VALUE, now.toEpochMilli())
             Pair(entry, currentRoot)
         }
         // ...but invoke the external anchor OUTSIDE the lock: a callback
