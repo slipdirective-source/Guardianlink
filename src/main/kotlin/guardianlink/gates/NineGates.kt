@@ -108,6 +108,11 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
 
     fun evaluate(ctx: GateContext): GateOutcome {
         val prep = Prepared()
+        // theta_assent_idle needs the ledger's last-append time as of ENTRY:
+        // halt/seal records are appended during the run, so a live read
+        // inside Gate 7 would let this evaluation's own appends fake
+        // liveness and make the idle check vacuous.
+        val ledgerIdleSnapshotMs = ctx.ledger.lastAppendMs()
         for (k in 0..8) {
             val reason = when (k) {
                 0 -> gate0(ctx)
@@ -117,7 +122,7 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
                 4 -> gate4(ctx)
                 5 -> gate5(ctx)
                 6 -> gate6(ctx, prep)
-                7 -> gate7(ctx)
+                7 -> gate7(ctx, ledgerIdleSnapshotMs)
                 8 -> gate8(ctx, prep)
                 else -> "unreachable gate $k"
             }
@@ -257,7 +262,7 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
     }
 
     // GATE 7: ASSENT & BOUNDED ALLOCATION
-    private fun gate7(ctx: GateContext): String? {
+    private fun gate7(ctx: GateContext, ledgerIdleSnapshotMs: Long?): String? {
         // theta_render: the person signs Render(a), not the payload.
         if (ctx.rendering != render(ctx.action))
             return "theta_render: shown rendering != Render(a)"
@@ -265,17 +270,67 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         val assentOk = checked { verifiers.verifyAssent(ctx.rendering, assent.signature) }
             ?: return "theta_assent: assent verifier threw (fail-closed)"
         if (!assentOk) return "theta_assent: assent signature invalid"
+        // theta_assent_idle: an outstanding assent dies only when BOTH hold:
+        //   (a) the assent itself is older than maxAssentIdleMs, AND
+        //   (b) the audit ledger has been silent longer than maxAssentIdleMs.
+        // A fresh assent on a quiet system still authorizes (the person is
+        // present); an old assent on a continuously-logging system rode along
+        // under observation; but an old assent plus a dark ledger means the
+        // world moved unobserved — fail closed. The snapshot was taken at
+        // evaluate() entry (see above).
+        val tau = ctx.clock.nowMs()
+        val assentedAt = ctx.assentedAtMs
+        // A future-dated assent is clock fraud or a replay window: fail closed.
+        if (assentedAt > tau)
+            return "theta_assent: assent dated in the future (t_assent=$assentedAt > tau=$tau)"
+        // assentedAt <= tau here, so (tau - assentedAt) is mathematically >= 0.
+        // A negative computed age means the subtraction overflowed (assentedAt
+        // near Long.MIN_VALUE) — an ancient timestamp, not a fresh one:
+        // treat as expired, fail closed.
+        val assentAge = tau - assentedAt
+        if (assentAge < 0)
+            return "theta_assent: assent age overflow — treated as expired (fail-closed)"
+        val ledgerIdle = ledgerIdleMs(tau, ledgerIdleSnapshotMs, assentAge)
+        if (assentAge > rails.maxAssentIdleMs && ledgerIdle > rails.maxAssentIdleMs)
+            return "theta_assent_idle: assent expired — age ${assentAge}ms and ledger silent ${ledgerIdle}ms (max ${rails.maxAssentIdleMs}ms)"
         // theta_cool: fixed-rail window scaling with COMPUTED impact.
         val window = rails.coolingWindowMs(impactOf(ctx.action))
-        val elapsed = ctx.clock.nowMs() - ctx.assentedAtMs
-        if (elapsed < window)
-            return "theta_cool: cooling window not elapsed ($elapsed < $window ms)"
+        if (assentAge < window)
+            return "theta_cool: cooling window not elapsed ($assentAge < $window ms)"
         // theta_mem: static bounds from the AST.
         if (estimatedMemoryBytes(ctx.action, rails) > rails.maxMemoryBytes)
             return "theta_mem: memory estimate exceeds allocation"
         if (estimatedCycles(ctx.action, rails) > rails.maxCycles)
             return "theta_mem: cycle estimate exceeds allocation"
         return null
+    }
+
+    /**
+     * Ledger silence duration in ms, overflow-safe.
+     *
+     * [snapshot] is lastAppendMs() taken at evaluate() entry (null = empty
+     * ledger). A null ledger falls back to [assentAge]: a brand-new ledger
+     * plus an old assent is expired — there is no recorded observation for
+     * the assent to have ridden along under.
+     *
+     * Arithmetic cases: snapshot <= tau makes (tau - snapshot)
+     * mathematically >= 0 — a negative computed result means the
+     * subtraction overflowed (snapshot near Long.MIN_VALUE, i.e. an ancient
+     * append), so the true silence exceeds Long.MAX_VALUE and therefore the
+     * rail: saturate to force the halt. snapshot > tau means the ledger
+     * postdates the attested clock (clock-domain anomaly or future-dated
+     * append): the ledger shows recorded activity, so treat as live (0).
+     * Forged future ledger timestamps are a caller-supply trust-boundary
+     * issue — the same forgery defeats the audit trail itself; the external
+     * anchor is the recourse (see MerkleAuditLog.lastAppendMs docs).
+     */
+    private fun ledgerIdleMs(tau: Long, snapshot: Long?, assentAge: Long): Long {
+        if (snapshot == null) return assentAge
+        if (snapshot > tau) return 0L
+        val idle = tau - snapshot
+        // idle < 0 with snapshot <= tau is mathematically impossible — the
+        // subtraction overflowed, so true silence > Long.MAX_VALUE > rail.
+        return if (idle < 0) Long.MAX_VALUE else idle
     }
 
     // GATE 8: SOVEREIGN INTEGRATION & IMMUTABLE SEAL
