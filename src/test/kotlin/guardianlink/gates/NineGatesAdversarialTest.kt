@@ -311,6 +311,136 @@ class NineGatesAdversarialTest {
     }
 
     // ------------------------------------------------------------------
+    // Gate 0 bounds: A_total covers the whole AST — condition subtrees,
+    // string bytes (UTF-8, not chars), field cardinalities, total payload.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun gate0HaltsOnDeepCondition() {
+        var c: Condition = Condition.FieldEquals("profile", "f", "v")
+        repeat(rails.maxConditionDepth + 2) { c = Condition.Not(c) }
+        val a = Action.Guarded(c, Action.Read("profile", listOf("f")))
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        assertEquals(0, h.atGate)
+        assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
+    }
+
+    @Test
+    fun gate0HaltsOnManyConditionNodes() {
+        val c = Condition.And(List(rails.maxConditionNodes + 1) { Condition.FieldEquals("profile", "f", "v") })
+        val a = Action.Guarded(c, Action.Read("profile", listOf("f")))
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        assertEquals(0, h.atGate)
+        assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
+    }
+
+    @Test
+    fun gate0HaltsOnOversizedStringAtom() {
+        val big = "x".repeat(rails.maxStringBytes + 1)
+        val a = Action.Read(big, listOf("f"))
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        assertEquals(0, h.atGate)
+        assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
+    }
+
+    @Test
+    fun gate0CountsUtf8BytesNotChars() {
+        // 200 chars but 400 UTF-8 bytes: must halt on the byte count.
+        val s = "é".repeat(200)
+        assertEquals(400, s.toByteArray(Charsets.UTF_8).size)
+        val a = Action.Read("profile", listOf(s))
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        assertEquals(0, h.atGate)
+        assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
+    }
+
+    @Test
+    fun gate0HaltsOnTooManyWriteFields() {
+        val a = Action.Write("profile", (1..rails.maxWriteFields + 1).associate { "f$it" to "v" })
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        assertEquals(0, h.atGate)
+        assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
+    }
+
+    @Test
+    fun gate0HaltsOnTooManyReadFields() {
+        val a = Action.Read("profile", List(rails.maxReadFields + 1) { "f$it" })
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        assertEquals(0, h.atGate)
+        assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
+    }
+
+    @Test
+    fun gate0HaltsOnExcessTotalPayload() {
+        // Each Write: 32 fields x (1B key + 256B value) = 8224B; 8 of them > 64KiB.
+        val bigVal = "v".repeat(rails.maxStringBytes)
+        val writes = List(8) { i -> Action.Write("w$i", (1..rails.maxWriteFields).associate { "k$it" to bigVal }) }
+        val a = Action.Sequence(writes)
+        assertTrue(payloadBytes(a) > rails.maxPayloadBytes, "test setup: payload must exceed bound")
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        assertEquals(0, h.atGate)
+        assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
+    }
+
+    @Test
+    fun gate0AcceptsExactBoundaryValues() {
+        // Exactly at every bound: must NOT halt at Gate 0.
+        val s = "x".repeat(rails.maxStringBytes)
+        var c: Condition = Condition.FieldEquals("profile", "f", "v")
+        repeat(rails.maxConditionDepth - 1) { c = Condition.Not(c) }
+        val a = Action.Guarded(
+            c,
+            Action.Write("profile", (1..rails.maxWriteFields).associate { "f$it" to s }),
+        )
+        val o = NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a)))
+        assertTrue(o !is GateOutcome.Halted || (o as GateOutcome.Halted).atGate != 0,
+            "boundary-legal action halted at Gate 0: $o")
+    }
+
+    @Test
+    fun memoryEstimateAccountsForPayload() {
+        val a = Action.Write("profile", mapOf("name" to "x".repeat(1000)))
+        // 1000-byte payload would exceed maxStringBytes at Gate 0, so test the
+        // estimator directly: estimate must include payload, not just nodes.
+        val est = estimatedMemoryBytes(a, rails)
+        assertEquals(1 * rails.bytesPerNode + payloadBytes(a), est)
+        assertTrue(est > 1 * rails.bytesPerNode, "payload missing from memory estimate")
+        val cyc = estimatedCycles(a, rails)
+        assertEquals(1 * rails.cyclesPerNode + payloadBytes(a), cyc)
+    }
+
+    // ------------------------------------------------------------------
+    // Gate 2 isolation: condition-named records are in the isolation set.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun gate2HaltsOnConditionRecordOutsideSubstrate() {
+        // Condition reads "ghost" (not in substrate); branches only touch "profile".
+        val a = Action.Guarded(
+            Condition.FieldEquals("ghost", "f", "v"),
+            Action.Read("profile", listOf("name")),
+            Action.Read("profile", listOf("name")),
+        )
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        assertEquals(2, h.atGate, "condition smuggling past isolation: $h")
+        assertTrue(h.reason.contains("phi_iso"), "wrong halt reason: ${h.reason}")
+    }
+
+    @Test
+    fun gate2HaltsOnNestedConditionRecordOutsideSubstrate() {
+        val a = Action.Guarded(
+            Condition.And(listOf(
+                Condition.FieldEquals("profile", "f", "v"),
+                Condition.Not(Condition.FieldEquals("ghost2", "f", "v")),
+            )),
+            Action.Read("profile", listOf("name")),
+        )
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        assertEquals(2, h.atGate, "nested condition smuggling past isolation: $h")
+        assertTrue(h.reason.contains("phi_iso"), "wrong halt reason: ${h.reason}")
+    }
+
+    // ------------------------------------------------------------------
     // Impact soundness: cooling scales with COMPUTED impact. If impactOf
     // ever understates, the cooling window is too short. Never allowed.
     // ------------------------------------------------------------------
