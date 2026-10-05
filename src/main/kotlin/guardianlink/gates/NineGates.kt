@@ -1,6 +1,5 @@
 package guardianlink.gates
 
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -122,6 +121,13 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
                 return GateOutcome.Halted(k, reason)
             }
         }
+        // Narrow the revocation check/commit gap: re-scan revocations
+        // immediately before sealing. A revocation that became visible (or
+        // valid) after Gate 8's scan still halts here instead of sealing.
+        revocationHaltReason(ctx)?.let { reason ->
+            ctx.ledger.append("HALT gate=8 action=${ctx.actionId} reason=$reason".toByteArray())
+            return GateOutcome.Halted(8, reason)
+        }
         // Gate 8 seal: commit the PREPARED transition — the same state Gate 6
         // (psi_inv) and Gate 8 (theta_atom) validated. No second evaluation.
         // All gates passed, so the slot is filled; the null branch is
@@ -182,7 +188,12 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
             ?: return "theta_zk: proof verifier threw (fail-closed)"
         if (!zkOk) return "theta_zk: proof verification failed"
         val tau = ctx.clock.nowMs()
-        if (abs(tau - ctx.proofs.issuedAtMs) > rails.deltaT)
+        // A proof dated in the future is clock fraud or a replay window:
+        // fail closed. The old abs() tolerance accepted slightly-future
+        // proofs — that is fail-open and is removed.
+        if (ctx.proofs.issuedAtMs > tau)
+            return "theta_time: proof issued in the future (t_pi=${ctx.proofs.issuedAtMs} > tau=$tau)"
+        if (tau - ctx.proofs.issuedAtMs > rails.deltaT)
             return "theta_time: proof outside freshness window (tau=$tau, t_pi=${ctx.proofs.issuedAtMs})"
         return null
     }
@@ -258,19 +269,39 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
     // GATE 8: SOVEREIGN INTEGRATION & IMMUTABLE SEAL
     private fun gate8(ctx: GateContext, prep: Prepared): String? {
         // theta_norev: a signed revocation between Gate 7 and Gate 8 drops to S_HALT.
-        val tau = ctx.clock.nowMs()
-        for (r in ctx.revocations) {
-            if (r.actionId != ctx.actionId || r.revokedAtMs > tau) continue
-            val valid = checked { verifiers.verifyRevocation(r) }
-                ?: return "theta_norev: revocation verifier threw (fail-closed)"
-            if (valid) return "theta_norev: valid signed revocation exists"
-        }
+        revocationHaltReason(ctx)?.let { return it }
         // theta_atom: the transition is the PREPARED state from Gate 6 —
         // never recomputed. Well-formedness is re-checked on that same state.
         val next = prepare(ctx, prep)
             ?: return "theta_atom: transition verifier threw (fail-closed)"
         if (next.records.values.any { it == null }) return "theta_atom: malformed transition"
         // theta_merkle: the seal append happens in evaluate() after all gates pass.
+        return null
+    }
+
+    /**
+     * theta_norev scan. Fail-closed in both time directions: a VALID signed
+     * revocation for this action halts whether it is dated in the past or
+     * the future. A future-dated revocation is clock skew or fraud —
+     * ignoring it (the old `revokedAtMs > tau → continue`) is fail-open.
+     * Revocation timestamps order revocations for audit; they never gate
+     * validity.
+     *
+     * Scanned at Gate 8 AND again immediately before the seal, narrowing
+     * the check/commit gap to the instructions between the two scans. The
+     * residual gap — a revocation issued after evaluate() returns but
+     * before the caller commits Integrated.newSubstrate — is architectural:
+     * the engine cannot observe the caller's commit. Callers MUST re-scan
+     * revocations at commit time or hold a commit lock across
+     * evaluate()+commit.
+     */
+    private fun revocationHaltReason(ctx: GateContext): String? {
+        for (r in ctx.revocations) {
+            if (r.actionId != ctx.actionId) continue
+            val valid = checked { verifiers.verifyRevocation(r) }
+                ?: return "theta_norev: revocation verifier threw (fail-closed)"
+            if (valid) return "theta_norev: valid signed revocation exists"
+        }
         return null
     }
 
