@@ -35,6 +35,7 @@ class NineGatesAdversarialTest {
         var throwPorts: Set<String> = emptySet(),
         var evilApply: ((SubstrateState, Action) -> SubstrateState)? = null,
         var applyCalls: Int = 0,
+        var revocationFn: ((Revocation) -> Boolean)? = null,
     ) : Verifiers {
         private fun maybeThrow(port: String) {
             if (port in throwPorts) throw RuntimeException("hostile port: $port")
@@ -53,7 +54,8 @@ class NineGatesAdversarialTest {
         }
 
         override fun verifyRevocation(revocation: Revocation): Boolean {
-            maybeThrow("revocation"); return revocationOk
+            maybeThrow("revocation")
+            return revocationFn?.invoke(revocation) ?: revocationOk
         }
 
         override fun boundaryPermitted(action: Action, substrate: SubstrateState): Boolean {
@@ -529,6 +531,8 @@ class NineGatesAdversarialTest {
 
     @Test
     fun revocationMatrix() {
+        // Fail-closed in both time directions: a VALID signed revocation for
+        // this action halts whether dated in the past or the future.
         val t = 50_000L
         for (idOk in listOf(true, false)) {
             for (sigOk in listOf(true, false)) {
@@ -542,7 +546,7 @@ class NineGatesAdversarialTest {
                     val out = NineGates(rails, v).evaluate(
                         passing(Action.Read("profile", listOf("name")), FakeClock(t), revocations = listOf(rev))
                     )
-                    if (idOk && sigOk && timeOk) {
+                    if (idOk && sigOk) {
                         val h = assertHalted(out)
                         assertEquals(8, h.atGate, "valid revocation did not halt (id=$idOk sig=$sigOk time=$timeOk)")
                     } else {
@@ -753,6 +757,101 @@ class NineGatesAdversarialTest {
         val out = NineGates(rails, v).evaluate(passing(Action.Read("profile", listOf("name"))))
         assertTrue(out is GateOutcome.Halted, "throwing transition ESCAPED")
         assertEquals(1, v.applyCalls, "throwing adapter was retried")
+    }
+
+    // ------------------------------------------------------------------
+    // Proof/revocation time: no future tolerance, fail-closed revocations,
+    // seal-time re-scan, durable monotonic clock.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun gate3HaltsOnFutureDatedProof() {
+        val clock = FakeClock(20_000L)
+        val base = passing(Action.Read("profile", listOf("name")), clock = clock)
+        val ctx = base.copy(proofs = base.proofs.copy(issuedAtMs = clock.nowMs() + 60_000L))
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        assertEquals(3, h.atGate, "future-dated proof not rejected: $h")
+        assertTrue(h.reason.contains("theta_time"), h.reason)
+    }
+
+    @Test
+    fun gate3HaltsOnStaleProof() {
+        val clock = FakeClock(20_000L)
+        val base = passing(Action.Read("profile", listOf("name")), clock = clock)
+        val ctx = base.copy(proofs = base.proofs.copy(issuedAtMs = clock.nowMs() - rails.deltaT - 1))
+        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        assertEquals(3, h.atGate)
+        assertTrue(h.reason.contains("theta_time"), h.reason)
+    }
+
+    @Test
+    fun gate8HaltsOnFutureDatedRevocation() {
+        // Valid signature + future date: fail CLOSED, never ignored.
+        val clock = FakeClock(20_000L)
+        val rev = Revocation("a1", "s".toByteArray(), clock.nowMs() + 60_000L)
+        val h = assertHalted(
+            NineGates(rails, FuzzVerifiers(revocationOk = true)).evaluate(
+                passing(Action.Read("profile", listOf("name")), clock = clock, revocations = listOf(rev))
+            )
+        )
+        assertEquals(8, h.atGate, "future-dated revocation ignored (fail-open): $h")
+        assertTrue(h.reason.contains("theta_norev"), h.reason)
+    }
+
+    @Test
+    fun gate8HaltsOnPastDatedRevocation() {
+        val clock = FakeClock(20_000L)
+        val rev = Revocation("a1", "s".toByteArray(), clock.nowMs() - 1_000L)
+        val h = assertHalted(
+            NineGates(rails, FuzzVerifiers(revocationOk = true)).evaluate(
+                passing(Action.Read("profile", listOf("name")), clock = clock, revocations = listOf(rev))
+            )
+        )
+        assertEquals(8, h.atGate)
+        assertTrue(h.reason.contains("theta_norev"), h.reason)
+    }
+
+    @Test
+    fun sealTimeRescanCatchesLateValidRevocation() {
+        // Revocation verifies invalid at Gate 8's scan but valid at the
+        // seal-time re-scan: the narrowed check/commit gap must still halt.
+        val v = FuzzVerifiers()
+        var calls = 0
+        v.revocationFn = { calls++; calls >= 2 }
+        val rev = Revocation("a1", "s".toByteArray(), 1_000L)
+        val h = assertHalted(
+            NineGates(rails, v).evaluate(
+                passing(Action.Read("profile", listOf("name")), revocations = listOf(rev))
+            )
+        )
+        assertEquals(8, h.atGate)
+        assertTrue(h.reason.contains("theta_norev"), h.reason)
+        assertEquals(2, calls, "expected Gate 8 scan + seal-time re-scan")
+    }
+
+    @Test
+    fun durableClockNeverRollsBackAcrossRestart() {
+        val f = java.io.File.createTempFile("tau", ".state")
+        try {
+            val t1 = DurableMonotonicClock(f).nowMs()
+            // Simulate a process restart: new instance, same state file.
+            val t2 = DurableMonotonicClock(f).nowMs()
+            assertTrue(t2 >= t1, "clock rolled back across restart: $t2 < $t1")
+        } finally {
+            f.delete()
+        }
+    }
+
+    @Test
+    fun durableClockSurvivesCorruptStateFile() {
+        val f = java.io.File.createTempFile("tau", ".state")
+        try {
+            f.writeText("not-a-number")
+            val c = DurableMonotonicClock(f) // must not throw
+            assertTrue(c.nowMs() > 0)
+        } finally {
+            f.delete()
+        }
     }
 
     // ------------------------------------------------------------------
