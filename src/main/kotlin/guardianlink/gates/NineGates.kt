@@ -65,6 +65,19 @@ sealed interface GateOutcome {
  */
 class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
 
+    /**
+     * Fail-closed verifier invocation. Ports are contracted total
+     * (verification may fail, never throw); a throwing port is treated
+     * as a failed verification — the engine halts, the exception never
+     * escapes. Defense in depth around the plugin boundary.
+     */
+    private inline fun <T> checked(block: () -> T): T? =
+        try {
+            block()
+        } catch (_: Exception) {
+            null
+        }
+
     fun evaluate(ctx: GateContext): GateOutcome {
         for (k in 0..8) {
             val reason = when (k) {
@@ -85,7 +98,13 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
             }
         }
         // Gate 8 seal: prepare x' purely, then seal the transition in M.
-        val newSubstrate = verifiers.applyAction(ctx.substrate, ctx.action)
+        // A throwing transition port halts instead of escaping.
+        val newSubstrate = checked { verifiers.applyAction(ctx.substrate, ctx.action) }
+        if (newSubstrate == null) {
+            val reason = "theta_atom: transition verifier threw (fail-closed)"
+            ctx.ledger.append("HALT gate=8 action=${ctx.actionId} reason=$reason".toByteArray())
+            return GateOutcome.Halted(8, reason)
+        }
         ctx.ledger.append(
             "SEAL action=${ctx.actionId} rendering=${ctx.rendering}".toByteArray()
         )
@@ -94,6 +113,9 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
 
     // GATE 0: VOID / SIGNAL DISCRIMINATION & ADMISSIBILITY
     private fun gate0(ctx: GateContext): String? {
+        // NaN is never < gammaNoise: without this guard a NaN SNR
+        // sails through the noise check. Non-finite input is hostile.
+        if (!ctx.signal.snr.isFinite()) return "theta_snr: non-finite SNR (fail-closed)"
         if (ctx.signal.snr < rails.gammaNoise) return "theta_snr: SNR ${ctx.signal.snr} < ${rails.gammaNoise}"
         if (!ctx.signal.wellFormed) return "theta_syn: malformed signal header"
         if (!validateAction(ctx.action, rails)) return "theta_ast: action not in A_total (unbounded or empty)"
@@ -102,10 +124,12 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
 
     // GATE 1: IDENTITY & INTENT ORIGIN
     private fun gate1(ctx: GateContext): String? {
-        if (!verifiers.verifySignature(ctx.keys.message, ctx.keys.signature))
-            return "theta_sig: signature verification failed"
+        val sigOk = checked { verifiers.verifySignature(ctx.keys.message, ctx.keys.signature) }
+            ?: return "theta_sig: signature verifier threw (fail-closed)"
+        if (!sigOk) return "theta_sig: signature verification failed"
         val d = euclidean(ctx.keys.biometricTemplate, ctx.keys.enrolledTemplate)
             ?: return "theta_bio: template dimension mismatch (fail-closed)"
+        if (!d.isFinite()) return "theta_bio: non-finite biometric distance (fail-closed)"
         if (d > rails.epsilonBio) return "theta_bio: biometric distance $d > ${rails.epsilonBio}"
         return null
     }
@@ -117,7 +141,9 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         val unknown = named - ctx.substrate.records.keys
         if (unknown.isNotEmpty()) return "phi_iso: action names records outside substrate: $unknown"
         // phi_perm: delegated to the boundary-permission port.
-        if (!verifiers.boundaryPermitted(ctx.action, ctx.substrate)) return "phi_perm: (action, context) not in M_policy"
+        val permitted = checked { verifiers.boundaryPermitted(ctx.action, ctx.substrate) }
+            ?: return "phi_perm: boundary verifier threw (fail-closed)"
+        if (!permitted) return "phi_perm: (action, context) not in M_policy"
         // phi_leak: holds by construction — Action is a closed AST with no
         // external-effect nodes, so External_Entropy(a(x)) == 0 structurally.
         return null
@@ -125,8 +151,9 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
 
     // GATE 3: ZERO-KNOWLEDGE CONTEXT AUDIT
     private fun gate3(ctx: GateContext): String? {
-        if (!verifiers.verifyZk(ctx.proofs.zkProof, ctx.proofs.publicInputs))
-            return "theta_zk: proof verification failed"
+        val zkOk = checked { verifiers.verifyZk(ctx.proofs.zkProof, ctx.proofs.publicInputs) }
+            ?: return "theta_zk: proof verifier threw (fail-closed)"
+        if (!zkOk) return "theta_zk: proof verification failed"
         val tau = ctx.clock.nowMs()
         if (abs(tau - ctx.proofs.issuedAtMs) > rails.deltaT)
             return "theta_time: proof outside freshness window (tau=$tau, t_pi=${ctx.proofs.issuedAtMs})"
@@ -135,6 +162,9 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
 
     // GATE 4: NEGENTROPY & ORDER FILTER
     private fun gate4(ctx: GateContext): String? {
+        // NaN is never > hMax: without this guard a NaN entropy
+        // sails through the filter.
+        if (!ctx.contextEntropyBits.isFinite()) return "theta_ent: non-finite entropy (fail-closed)"
         if (ctx.contextEntropyBits > rails.hMax)
             return "theta_ent: context entropy ${ctx.contextEntropyBits} > ${rails.hMax} bits"
         if (ctx.contextParseTrees != 1)
@@ -146,21 +176,30 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
     private fun gate5(ctx: GateContext): String? {
         val drift = cosineDistance(ctx.intentVector, ctx.currentVector)
             ?: return "theta_drift: intent vector dimension mismatch (fail-closed)"
+        // NaN drift is never > epsilonDrift: without this guard it authorizes.
         // epsilon_drift is a fixed rail: drift may halt an action, never authorize one.
+        if (!drift.isFinite()) return "theta_drift: non-finite drift (fail-closed)"
         if (drift > rails.epsilonDrift) return "theta_drift: intent drift $drift > ${rails.epsilonDrift}"
-        if (!verifiers.metaLoopConsistent(ctx)) return "theta_loop: meta-cognitive loop inconsistent"
+        val loopOk = checked { verifiers.metaLoopConsistent(ctx) }
+            ?: return "theta_loop: meta-loop verifier threw (fail-closed)"
+        if (!loopOk) return "theta_loop: meta-cognitive loop inconsistent"
         return null
     }
 
     // GATE 6: GOVERNANCE FILTER
     private fun gate6(ctx: GateContext): String? {
-        if (!verifiers.policyRules(ctx.action, ctx.substrate)) return "psi_rules: governance rule failed"
+        val rulesOk = checked { verifiers.policyRules(ctx.action, ctx.substrate) }
+            ?: return "psi_rules: governance verifier threw (fail-closed)"
+        if (!rulesOk) return "psi_rules: governance rule failed"
         // psi_inv: core invariants of the transition — no record may appear
         // from nothing (the AST has no create node) and no field map may be null.
-        val next = verifiers.applyAction(ctx.substrate, ctx.action)
+        val next = checked { verifiers.applyAction(ctx.substrate, ctx.action) }
+            ?: return "psi_inv: transition verifier threw (fail-closed)"
         val created = next.records.keys - ctx.substrate.records.keys
         if (created.isNotEmpty()) return "psi_inv: transition creates records: $created"
-        val divergence = verifiers.governanceDivergence(ctx.action)
+        val divergence = checked { verifiers.governanceDivergence(ctx.action) }
+            ?: return "psi_align: divergence verifier threw (fail-closed)"
+        if (!divergence.isFinite()) return "psi_align: non-finite divergence (fail-closed)"
         if (divergence > rails.epsilonGovernance)
             return "psi_align: governance divergence $divergence > ${rails.epsilonGovernance}"
         return null
@@ -172,8 +211,9 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         if (ctx.rendering != render(ctx.action))
             return "theta_render: shown rendering != Render(a)"
         val assent = ctx.assent ?: return "theta_assent: no assent signature present"
-        if (!verifiers.verifyAssent(ctx.rendering, assent.signature))
-            return "theta_assent: assent signature invalid"
+        val assentOk = checked { verifiers.verifyAssent(ctx.rendering, assent.signature) }
+            ?: return "theta_assent: assent verifier threw (fail-closed)"
+        if (!assentOk) return "theta_assent: assent signature invalid"
         // theta_cool: fixed-rail window scaling with COMPUTED impact.
         val window = rails.coolingWindowMs(impactOf(ctx.action))
         val elapsed = ctx.clock.nowMs() - ctx.assentedAtMs
@@ -191,13 +231,16 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
     private fun gate8(ctx: GateContext): String? {
         // theta_norev: a signed revocation between Gate 7 and Gate 8 drops to S_HALT.
         val tau = ctx.clock.nowMs()
-        val revoked = ctx.revocations.any { r ->
-            r.actionId == ctx.actionId && r.revokedAtMs <= tau && verifiers.verifyRevocation(r)
+        for (r in ctx.revocations) {
+            if (r.actionId != ctx.actionId || r.revokedAtMs > tau) continue
+            val valid = checked { verifiers.verifyRevocation(r) }
+                ?: return "theta_norev: revocation verifier threw (fail-closed)"
+            if (valid) return "theta_norev: valid signed revocation exists"
         }
-        if (revoked) return "theta_norev: valid signed revocation exists"
         // theta_atom: the transition is exactly the pure function's result —
         // deterministic by construction; well-formedness is the check.
-        val next = verifiers.applyAction(ctx.substrate, ctx.action)
+        val next = checked { verifiers.applyAction(ctx.substrate, ctx.action) }
+            ?: return "theta_atom: transition verifier threw (fail-closed)"
         if (next.records.values.any { it == null }) return "theta_atom: malformed transition"
         // theta_merkle: the seal append happens in evaluate() after all gates pass.
         return null
