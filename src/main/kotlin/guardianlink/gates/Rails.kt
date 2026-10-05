@@ -19,6 +19,18 @@ data class Rails(
     val deltaT: Long = 60_000L,          // Gate 3: proof freshness window, ms (theta_time)
     val baseCoolingMs: Long = 5_000L,    // Gate 7: cooling window base, ms
     val coolingPerImpactStep: Long = 5_000L, // Gate 7: added per impact level above READ_ONLY
+    /**
+     * Gate 7: assent idle-max-age, ms (theta_assent_idle).
+     *
+     * An outstanding assent dies only when BOTH hold: (a) the assent itself
+     * is older than this, AND (b) the audit ledger has been silent (no
+     * appends) longer than this. Rationale: a fresh assent on a quiet
+     * system still authorizes (the person is present); an old assent on a
+     * continuously-logging system rode along under observation; but an old
+     * assent plus a dark ledger means the world moved unobserved — fail
+     * closed. A null/empty ledger counts as silent since the assent time.
+     */
+    val maxAssentIdleMs: Long = 86_400_000L, // 24h
     val maxActionNodes: Int = 64,        // Gate 0: A_total action-node bound (theta_ast)
     val maxActionDepth: Int = 8,         // Gate 0: A_total action-depth bound (theta_ast)
     val maxConditionNodes: Int = 64,    // Gate 0: condition-node bound (theta_ast)
