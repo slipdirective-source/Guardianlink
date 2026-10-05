@@ -86,7 +86,7 @@ fun main() {
         println("  Share $i: category=${share.category}, x=${share.x}, y=${share.y}")
     }
 
-    val reconstructed = mfa.reconstruct(shares.take(2))
+    val reconstructed = mfa.reconstruct(shares.take(2), threshold = 2)
     println("Reconstructed from first 2 shares: $reconstructed (matches=${ reconstructed == secret})")
     println()
 
