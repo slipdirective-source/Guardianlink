@@ -68,12 +68,17 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
      * Fail-closed verifier invocation. Ports are contracted total
      * (verification may fail, never throw); a throwing port is treated
      * as a failed verification — the engine halts, the exception never
-     * escapes. Defense in depth around the plugin boundary.
+     * escapes.
+     *
+     * Catches Throwable, not just Exception: a hostile or buggy adapter
+     * can throw Error (AssertionError, StackOverflowError from deliberate
+     * recursion, custom Error subclasses). Letting those escape would
+     * bypass the halt ledger — the engine must halt, nothing escapes.
      */
     private inline fun <T> checked(block: () -> T): T? =
         try {
             block()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             null
         }
 
@@ -188,13 +193,20 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
             ?: return "theta_zk: proof verifier threw (fail-closed)"
         if (!zkOk) return "theta_zk: proof verification failed"
         val tau = ctx.clock.nowMs()
+        val issuedAt = ctx.proofs.issuedAtMs
         // A proof dated in the future is clock fraud or a replay window:
         // fail closed. The old abs() tolerance accepted slightly-future
         // proofs — that is fail-open and is removed.
-        if (ctx.proofs.issuedAtMs > tau)
-            return "theta_time: proof issued in the future (t_pi=${ctx.proofs.issuedAtMs} > tau=$tau)"
-        if (tau - ctx.proofs.issuedAtMs > rails.deltaT)
-            return "theta_time: proof outside freshness window (tau=$tau, t_pi=${ctx.proofs.issuedAtMs})"
+        if (issuedAt > tau)
+            return "theta_time: proof issued in the future (t_pi=$issuedAt > tau=$tau)"
+        // issuedAt <= tau here, so (tau - issuedAt) is mathematically >= 0.
+        // A negative computed age means the subtraction overflowed (issuedAt
+        // near Long.MIN_VALUE) — an ancient timestamp, not a fresh one.
+        // Without this check the overflow wraps negative and defeats the
+        // freshness window entirely.
+        val age = tau - issuedAt
+        if (age < 0 || age > rails.deltaT)
+            return "theta_time: proof outside freshness window (tau=$tau, t_pi=$issuedAt)"
         return null
     }
 
