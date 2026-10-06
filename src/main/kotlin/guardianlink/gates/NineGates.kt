@@ -66,8 +66,10 @@ interface Verifiers {
 
 /** Outcome of the Nine Gates evaluation (Codex v2.2, §V). */
 sealed interface GateOutcome {
-    /** S_9 — Sovereign Integration. Carry the prepared substrate for commit. */
-    data class Integrated(val newSubstrate: SubstrateState) : GateOutcome
+    /** S_9 — Sovereign Integration. Carry the prepared substrate for commit,
+     * plus the Merkle root of the seal entry, so a composition layer can
+     * anchor the seal externally without touching the engine's ledger. */
+    data class Integrated(val newSubstrate: SubstrateState, val sealRoot: String) : GateOutcome
 
     /** S_HALT — absorbing. Names the gate that failed and why. */
     data class Halted(val atGate: Int, val reason: String) : GateOutcome
@@ -187,7 +189,7 @@ class NineGates(
             return GateOutcome.Halted(8, reason)
         }
         appendAudit("SEAL action=${ctx.actionId} rendering=${ctx.rendering}")
-        return GateOutcome.Integrated(newSubstrate)
+        return GateOutcome.Integrated(newSubstrate, sealRoot = ledger.root)
     }
 
     /**
