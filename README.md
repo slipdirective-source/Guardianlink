@@ -7,10 +7,10 @@ system.
 
 ## Build
 
-Push this repo to GitHub as-is — .github/workflows/build.yml will build and test
+Push this repo to GitHub as-is — .github/workflows/ci.yml will build and test
 it automatically via GitHub Actions (free runners, full JDK/Gradle support).
 
-Locally: ./gradlew build test (requires JDK 17+).
+Locally: `gradle build test` (requires JDK 17+; no Gradle wrapper is checked in).
 
 ## Verification status
 
@@ -64,6 +64,6 @@ Executable model of the Global Master Codex v2.2 Nine Gates FSM
   scaling with AST-computed impact, signed revocation until seal.
 - Gate 8: prepare-then-commit — `applyAction` is pure, the caller commits
   by adopting `GateOutcome.Integrated.newSubstrate`. The seal is never post-hoc.
-- 155 tests in `NineGatesTest` / `NineGatesAdversarialTest` cover every gate's
+- 155 tests across the suite (`NineGatesTest` / `NineGatesAdversarialTest` hold 73 between them) cover every gate's
   halt path, cooling scaling, revocation, ledger appends, render injectivity,
   and single-evaluation. Demo in `Main.kt`.
