@@ -36,12 +36,12 @@ claims, not truth**:
 
 | Claim source | What the engine checks | What it does NOT check (adapter required) |
 |---|---|---|
-| `GateContext` evidence (biometric vectors, SNR, entropy, parse trees, proof bytes) | Internal consistency, bounds, finiteness | That the values are true — a caller can supply self-consistent lies |
+| `GateContext` evidence (biometric vectors, SNR, entropy, parse trees, proof bytes, claimed assent time) | Internal consistency, bounds, finiteness | That the values are true — a caller can supply self-consistent lies; the assent signature must bind (rendering, assentedAtMs, actionId) per the `verifyAssent` contract |
 | `Verifiers` ports (signatures, ZK, assent, revocation, policy) | Totality (throw → halt), boolean outcomes | Cryptographic validity itself — real signature/ZK/attestation adapters required |
 | Shamir share categories | Share math (field ranges, no dup x, threshold, mandatory HW label) | That a share labeled `HARDWARE_BIOMETRIC` really came from hardware — attestation binding + VSS commitments required |
 | Trajectory samples | Finiteness, magnitude bounds, self-consistency, windowed anomalies | That samples are authentic — signed/attested sensor streams required |
-| Merkle ledger | Tamper-evidence within the process | Immutability — requires a **durable external anchor** (write-once store / timestamping authority); the demo anchor only prints |
-| Assent idle-expiry (`theta_assent_idle`) | Assent age + ledger silence vs `maxAssentIdleMs` (24h) — an assent dies only when BOTH are exceeded | Ledger append times are caller-supplied: forged future-dated appends fake liveness the same way they forge the audit trail — the external anchor is the recourse |
+| Merkle ledger | Tamper-evidence within the process; engine records carry engine-attested timestamps from the engine-owned clock | Immutability — requires a **durable external anchor** (write-once store / timestamping authority); the demo anchor only prints. Direct external appends (outside the engine) keep the caller-supplied timestamp caveat |
+| Assent idle-expiry (`theta_assent_idle`) | Assent age + ledger silence vs `maxAssentIdleMs` (24h) — an assent dies only when BOTH are exceeded | The silence check reads the engine-owned ledger, and engine appends are engine-attested, closing the forged-liveness vector for engine records — the external anchor remains the recourse for direct ledger writes |
 | Revocation scan | All revocations known at Gate 8 + seal time | Revocations issued after `evaluate()` returns but before the caller commits — callers MUST re-scan at commit or hold a commit lock |
 | `PolicyEngine` rail lifecycle | Authorization hook (`RailAuthorizer`, default deny-all) | Real authentication — capability tokens / signed admin commands required in production |
 | `FrictionStateMachine` time | Injected clock + backward-jump high-water mark | The clock being truly monotonic — deployments must inject a monotonic source |
@@ -58,10 +58,14 @@ Executable model of the Global Master Codex v2.2 Nine Gates FSM
 - Deterministic, fail-closed: any failing predicate drops to `S_HALT`,
   and every halt — including revocations — is appended to the Merkle ledger.
 - Crypto/governance plug in through `Verifiers`; the engine itself is pure.
-- Gate 7: assent over `Render(a)` (never the payload), idle-max-age
+- Gate 7: assent over `Render(a)` (never the payload), with the signature binding `(rendering, assentedAtMs, actionId)`; idle-max-age
   (`maxAssentIdleMs` = 24h — an assent dies only when BOTH the assent is old
   AND the ledger has been silent that long), fixed-rail cooling window
   scaling with AST-computed impact, signed revocation until seal.
+- Engine-owned instruments: `NineGates` takes its clock and ledger as
+  constructor arguments — never from the request. Revocations arrive via
+  the `Verifiers.revocationsFor` port. A request cannot substitute the
+  engine's time source, audit sink, or revocation feed.
 - Gate 8: prepare-then-commit — `applyAction` is pure, the caller commits
   by adopting `GateOutcome.Integrated.newSubstrate`. The seal is never post-hoc.
 - 155 tests across the suite (`NineGatesTest` / `NineGatesAdversarialTest` hold 73 between them) cover every gate's
