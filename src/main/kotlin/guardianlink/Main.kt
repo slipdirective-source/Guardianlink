@@ -4,6 +4,7 @@ import guardianlink.adapters.CanonicalRecord
 import guardianlink.adapters.DomainAdapter
 import guardianlink.adapters.ImmutableGraph
 import guardianlink.adapters.SensitivityTier
+import guardianlink.audit.AppendOnlyFileAnchor
 import guardianlink.audit.MerkleAuditLog
 import guardianlink.core.ConciergeInterface
 import guardianlink.friction.FrictionStateMachine
@@ -43,7 +44,24 @@ fun main() {
         println("[AUDIT] Merkle root checkpoint at entry $index: $rootHash (NOT durably anchored — demo only)")
     }
 
-    val concierge = ConciergeInterface(policyEngine, auditLog)
+    // The gate engine: permissive verifiers, engine-owned clock and ledger.
+    // Production deployments MUST supply real cryptographic verifiers here.
+    val verifiers = demoVerifiers()
+    val gates = NineGates(Rails(), verifiers, clock = FakeClock(t = 60_000L), ledger = MerkleAuditLog())
+    // One real external anchor path: sealed roots are appended to a
+    // tamper-evident anchor file (host-filesystem grade — see ExternalAnchor).
+    val anchorDir = java.nio.file.Files.createTempDirectory("guardianlink-anchors")
+    val anchor = AppendOnlyFileAnchor(anchorDir)
+    println("Anchor directory: $anchorDir")
+    println()
+
+    val concierge = ConciergeInterface(
+        policyEngine,
+        auditLog,
+        gates,
+        anchor,
+        initialSubstrate = SubstrateState(mapOf("profile" to mapOf("name" to "Caleb"))),
+    )
 
     // Demo: FrictionStateMachine with escalation
     println("=== FrictionStateMachine Demo ===")
@@ -137,9 +155,12 @@ fun main() {
     println("Evaluated level: $integrityLevel (can override: ${DeviceIntegrityTier.overrideEligible(integrityLevel)})")
     println()
 
-    // Demo: Nine Gates FSM (Codex v2.2 policy core)
-    println("=== NineGates Demo ===")
-    runNineGatesDemo()
+    // Demo: Nine Gates FSM (Codex v2.2 policy core), composed — every
+    // execution goes through ConciergeInterface.execute, which forces the
+    // action through the gates and anchors each seal externally.
+    println("=== NineGates Demo (composed) ===")
+    runComposedDemo(concierge, gates, setRevocations = { verifiers.revocationFeed = it })
+    println("Anchor chain verify: ${if (anchor.verifyChain() < 0) "INTACT" else "BROKEN"}")
     println()
 
     println("=" * 72)
@@ -150,76 +171,75 @@ fun main() {
 private operator fun String.times(count: Int) = this.repeat(count)
 
 /**
- * Nine Gates demo: a permissive verifier set (all crypto checks pass),
- * showing an all-pass integration, a tampered rendering (HALT at Gate 7),
- * and a signed revocation between assent and seal (HALT at Gate 8).
+ * Demo verifiers: permissive (all crypto checks pass). Production
+ * deployments MUST supply real signature/ZK/assent/revocation verifiers —
+ * and an assent verifier that enforces the (rendering, assentedAtMs,
+ * actionId) binding contract (see Verifiers.verifyAssent).
  */
-private fun runNineGatesDemo() {
-    val rails = Rails()
-    val verifiers = object : Verifiers {
-        /** Demo revocation feed — in production this is the deployment's feed, not the request. */
-        var revocationFeed: List<Revocation> = emptyList()
-        override fun verifySignature(message: ByteArray, signature: ByteArray) = true
-        override fun verifyZk(proof: ByteArray, publicInputs: ByteArray) = true
-        // Demo assents unconditionally; a production verifier MUST check the
-        // signature over (rendering, assentedAtMs, actionId) — see the port contract.
-        override fun verifyAssent(rendering: String, assentedAtMs: Long, actionId: String, signature: ByteArray) = true
-        override fun verifyRevocation(revocation: Revocation) = true
-        override fun revocationsFor(actionId: String) = revocationFeed.filter { it.actionId == actionId }
-        override fun boundaryPermitted(action: Action, substrate: SubstrateState) = true
-        override fun policyRules(action: Action, substrate: SubstrateState) = true
-        override fun governanceDivergence(action: Action) = 0.0
-        override fun metaLoopConsistent(context: GateContext) = true
-        override fun applyAction(substrate: SubstrateState, action: Action): SubstrateState =
-            // Canonical reference semantics (see ReferenceTransition): the
-            // demo used to always take the `then` branch of Guarded,
-            // ignoring the condition — a fail-open adapter bug. Fixed by
-            // sharing the one canonical evaluator.
-            ReferenceTransition.apply(substrate, action)
-    }
-    // The engine owns its clock and ledger — instruments of the deployment,
-    // not arguments of the request.
-    val clock = FakeClock(t = 60_000L)
-    val gates = NineGates(rails, verifiers, clock = clock, ledger = MerkleAuditLog())
+private fun demoVerifiers() = object : Verifiers {
+    /** Demo revocation feed — in production this is the deployment's feed, not the request. */
+    var revocationFeed: List<Revocation> = emptyList()
+    override fun verifySignature(message: ByteArray, signature: ByteArray) = true
+    override fun verifyZk(proof: ByteArray, publicInputs: ByteArray) = true
+    // Demo assents unconditionally; a production verifier MUST check the
+    // signature over (rendering, assentedAtMs, actionId) — see the port contract.
+    override fun verifyAssent(rendering: String, assentedAtMs: Long, actionId: String, signature: ByteArray) = true
+    override fun verifyRevocation(revocation: Revocation) = true
+    override fun revocationsFor(actionId: String) = revocationFeed.filter { it.actionId == actionId }
+    override fun boundaryPermitted(action: Action, substrate: SubstrateState) = true
+    override fun policyRules(action: Action, substrate: SubstrateState) = true
+    override fun governanceDivergence(action: Action) = 0.0
+    override fun metaLoopConsistent(context: GateContext) = true
+    override fun applyAction(substrate: SubstrateState, action: Action): SubstrateState =
+        // Canonical reference semantics (see ReferenceTransition): the
+        // demo used to always take the `then` branch of Guarded,
+        // ignoring the condition — a fail-open adapter bug. Fixed by
+        // sharing the one canonical evaluator.
+        ReferenceTransition.apply(substrate, action)
+}
 
-    fun contextFor(
+/**
+ * Composed Nine Gates demo: all-pass integration (anchored), a tampered
+ * rendering (REJECTED at Gate 7), and a signed revocation between assent
+ * and seal (REJECTED at Gate 8). Every execution goes through
+ * ConciergeInterface.execute — there is no direct engine path here.
+ */
+private fun runComposedDemo(
+    concierge: ConciergeInterface,
+    gates: NineGates,
+    setRevocations: (List<Revocation>) -> Unit,
+) {
+    val clock = gates.clock
+
+    fun evidenceFor(
         action: Action,
         rendering: String = render(action),
-        revocations: List<Revocation> = emptyList(),
-    ): GateContext {
-        verifiers.revocationFeed = revocations
-        return GateContext(
-            signal = Signal("req".toByteArray(), snr = 20.0, wellFormed = true),
-            keys = KeyMaterial(
-                "req".toByteArray(), "sig".toByteArray(),
-                doubleArrayOf(0.0, 0.0), doubleArrayOf(0.0, 0.0),
-            ),
-            proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = clock.nowMs()),
-            contextEntropyBits = 2.0,
-            contextParseTrees = 1,
-            action = action,
-            actionId = "demo-1",
-            substrate = SubstrateState(mapOf("profile" to mapOf("name" to "Caleb"))),
-            rendering = rendering,
-            assent = Assent("s_a".toByteArray()),
-            assentedAtMs = 0L, // 60s elapsed; WRITE window is 10s
-            intentVector = doubleArrayOf(1.0, 0.0),
-            currentVector = doubleArrayOf(1.0, 0.0),
-        )
-    }
+    ) = ConciergeInterface.ActionEvidence(
+        actionId = "demo-1",
+        signal = Signal("req".toByteArray(), snr = 20.0, wellFormed = true),
+        keys = KeyMaterial(
+            "req".toByteArray(), "sig".toByteArray(),
+            doubleArrayOf(0.0, 0.0), doubleArrayOf(0.0, 0.0),
+        ),
+        proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = clock.nowMs()),
+        contextEntropyBits = 2.0,
+        contextParseTrees = 1,
+        rendering = rendering,
+        assent = Assent("s_a".toByteArray()),
+        assentedAtMs = 0L, // 60s elapsed; WRITE window is 10s
+        intentVector = doubleArrayOf(1.0, 0.0),
+        currentVector = doubleArrayOf(1.0, 0.0),
+    )
 
     val write = Action.Write("profile", mapOf("name" to "Neo"))
-    val ok = gates.evaluate(contextFor(write))
+    val ok = concierge.execute(write, evidenceFor(write))
     println("All-pass request: $ok")
 
-    val tampered = gates.evaluate(contextFor(write, rendering = "WRITE profile {name=Attacker}"))
+    val tampered = concierge.execute(write, evidenceFor(write, rendering = "WRITE profile {name=Attacker}"))
     println("Tampered rendering: $tampered")
 
-    val revoked = gates.evaluate(
-        contextFor(
-            write,
-            revocations = listOf(Revocation("demo-1", "rev".toByteArray(), revokedAtMs = 59_000L)),
-        )
-    )
+    setRevocations(listOf(Revocation("demo-1", "rev".toByteArray(), revokedAtMs = 59_000L)))
+    val revoked = concierge.execute(write, evidenceFor(write))
     println("Revoked before seal: $revoked")
+    setRevocations(emptyList())
 }
