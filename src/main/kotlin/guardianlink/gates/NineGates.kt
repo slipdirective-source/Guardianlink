@@ -1,5 +1,6 @@
 package guardianlink.gates
 
+import guardianlink.audit.MerkleAuditLog
 import kotlin.math.sqrt
 
 /**
@@ -15,8 +16,29 @@ interface Verifiers {
     /** Gate 3, theta_zk: VerifyZK(VK, x_pub, pi_zk). */
     fun verifyZk(proof: ByteArray, publicInputs: ByteArray): Boolean
 
-    /** Gate 7, theta_assent: Verify_{K_p}(r, s_a). */
-    fun verifyAssent(rendering: String, signature: ByteArray): Boolean
+    /**
+     * Gate 7, theta_assent: Verify_{K_p}(r, t_assent, actionId, s_a).
+     *
+     * ASSENT BINDING CONTRACT: the signature MUST bind the triple
+     * (rendering, assentedAtMs, actionId). The engine passes all three;
+     * binding them is what defeats backdating (skip the cooling window),
+     * refreshing (defeat idle expiry), and replay (one assent for any
+     * identical action). A verifier that checks the signature against the
+     * rendering alone honors the letter of this port and defeats its
+     * purpose — that is deployment-unsafe, the same class of error as
+     * RailAuthorizer.PERMISSIVE.
+     */
+    fun verifyAssent(rendering: String, assentedAtMs: Long, actionId: String, signature: ByteArray): Boolean
+
+    /**
+     * Revocation feed for an action. The engine owns no revocation list;
+     * revocations arrive through this port so the deployment — not the
+     * request — controls the feed. Called at Gate 8 AND again immediately
+     * before the seal (narrowing the check/commit gap); implementations
+     * must tolerate repeated calls. Throwing fails closed like every
+     * other port.
+     */
+    fun revocationsFor(actionId: String): List<Revocation>
 
     /** Gate 8, theta_norev: validity of a signed revocation. */
     fun verifyRevocation(revocation: Revocation): Boolean
@@ -61,8 +83,22 @@ sealed interface GateOutcome {
  * Fail-closed invariant (§I.4): any ambiguity, policy violation, or
  * unverified mutation drops execution to S_HALT. Every S_HALT transition
  * — including revocations — is appended to the ledger M.
+ *
+ * INSTRUMENT OWNERSHIP: the engine owns its clock and ledger. They are
+ * constructor-supplied (defaulting to the system monotonic clock and a
+ * fresh in-process ledger) and NEVER taken from the request — a request
+ * cannot substitute the engine's time source or audit sink, which is what
+ * the per-request GateContext ledger/clock allowed. Revocations likewise
+ * arrive through the Verifiers.revocationsFor port, not the request.
+ * Deployments wire a DurableMonotonicClock and a real external anchor;
+ * the demo defaults are process-local only.
  */
-class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
+class NineGates(
+    private val rails: Rails,
+    private val verifiers: Verifiers,
+    val clock: MonotonicClock = SystemMonotonicClock(),
+    val ledger: MerkleAuditLog = MerkleAuditLog(),
+) {
 
     /**
      * Fail-closed verifier invocation. Ports are contracted total
@@ -111,8 +147,10 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         // theta_assent_idle needs the ledger's last-append time as of ENTRY:
         // halt/seal records are appended during the run, so a live read
         // inside Gate 7 would let this evaluation's own appends fake
-        // liveness and make the idle check vacuous.
-        val ledgerIdleSnapshotMs = ctx.ledger.lastAppendMs()
+        // liveness and make the idle check vacuous. The ledger is
+        // engine-owned, so the snapshot is the engine's own record — not a
+        // caller-supplied value.
+        val ledgerIdleSnapshotMs = ledger.lastAppendMs()
         for (k in 0..8) {
             val reason = when (k) {
                 0 -> gate0(ctx)
@@ -127,7 +165,7 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
                 else -> "unreachable gate $k"
             }
             if (reason != null) {
-                ctx.ledger.append("HALT gate=$k action=${ctx.actionId} reason=$reason".toByteArray())
+                appendAudit("HALT gate=$k action=${ctx.actionId} reason=$reason")
                 return GateOutcome.Halted(k, reason)
             }
         }
@@ -135,7 +173,7 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         // immediately before sealing. A revocation that became visible (or
         // valid) after Gate 8's scan still halts here instead of sealing.
         revocationHaltReason(ctx)?.let { reason ->
-            ctx.ledger.append("HALT gate=8 action=${ctx.actionId} reason=$reason".toByteArray())
+            appendAudit("HALT gate=8 action=${ctx.actionId} reason=$reason")
             return GateOutcome.Halted(8, reason)
         }
         // Gate 8 seal: commit the PREPARED transition — the same state Gate 6
@@ -145,13 +183,22 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         val newSubstrate = prep.state
         if (newSubstrate == null) {
             val reason = "theta_atom: prepared transition missing (fail-closed)"
-            ctx.ledger.append("HALT gate=8 action=${ctx.actionId} reason=$reason".toByteArray())
+            appendAudit("HALT gate=8 action=${ctx.actionId} reason=$reason")
             return GateOutcome.Halted(8, reason)
         }
-        ctx.ledger.append(
-            "SEAL action=${ctx.actionId} rendering=${ctx.rendering}".toByteArray()
-        )
+        appendAudit("SEAL action=${ctx.actionId} rendering=${ctx.rendering}")
         return GateOutcome.Integrated(newSubstrate)
+    }
+
+    /**
+     * Engine-attested audit append. The timestamp comes from the
+     * engine-owned clock — never from the request — closing the
+     * caller-supplied-timestamp forgery vector for engine records.
+     * (External appenders using MerkleAuditLog directly keep the
+     * documented caller-supplied caveat.)
+     */
+    private fun appendAudit(payload: String) {
+        ledger.append(payload.toByteArray(), clock.nowMs())
     }
 
     // GATE 0: VOID / SIGNAL DISCRIMINATION & ADMISSIBILITY
@@ -197,7 +244,7 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         val zkOk = checked { verifiers.verifyZk(ctx.proofs.zkProof, ctx.proofs.publicInputs) }
             ?: return "theta_zk: proof verifier threw (fail-closed)"
         if (!zkOk) return "theta_zk: proof verification failed"
-        val tau = ctx.clock.nowMs()
+        val tau = clock.nowMs()
         val issuedAt = ctx.proofs.issuedAtMs
         // A proof dated in the future is clock fraud or a replay window:
         // fail closed. The old abs() tolerance accepted slightly-future
@@ -267,7 +314,10 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         if (ctx.rendering != render(ctx.action))
             return "theta_render: shown rendering != Render(a)"
         val assent = ctx.assent ?: return "theta_assent: no assent signature present"
-        val assentOk = checked { verifiers.verifyAssent(ctx.rendering, assent.signature) }
+        // The signature must bind (rendering, assentedAtMs, actionId) —
+        // see the Verifiers.verifyAssent contract. Backdating, refreshing,
+        // and replay are defeated by the binding, not by this gate alone.
+        val assentOk = checked { verifiers.verifyAssent(ctx.rendering, ctx.assentedAtMs, ctx.actionId, assent.signature) }
             ?: return "theta_assent: assent verifier threw (fail-closed)"
         if (!assentOk) return "theta_assent: assent signature invalid"
         // theta_assent_idle: an outstanding assent dies only when BOTH hold:
@@ -278,7 +328,7 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
         // under observation; but an old assent plus a dark ledger means the
         // world moved unobserved — fail closed. The snapshot was taken at
         // evaluate() entry (see above).
-        val tau = ctx.clock.nowMs()
+        val tau = clock.nowMs()
         val assentedAt = ctx.assentedAtMs
         // A future-dated assent is clock fraud or a replay window: fail closed.
         if (assentedAt > tau)
@@ -363,7 +413,11 @@ class NineGates(private val rails: Rails, private val verifiers: Verifiers) {
      * evaluate()+commit.
      */
     private fun revocationHaltReason(ctx: GateContext): String? {
-        for (r in ctx.revocations) {
+        // Revocations arrive through the port — the deployment's feed, not
+        // the request. A throwing feed fails closed like every other port.
+        val revocations = checked { verifiers.revocationsFor(ctx.actionId) }
+            ?: return "theta_norev: revocation feed threw (fail-closed)"
+        for (r in revocations) {
             if (r.actionId != ctx.actionId) continue
             val valid = checked { verifiers.verifyRevocation(r) }
                 ?: return "theta_norev: revocation verifier threw (fail-closed)"
