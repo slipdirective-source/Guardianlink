@@ -11,7 +11,13 @@ import kotlin.test.assertTrue
 class ConciergeInterfaceTest {
     private val policyEngine = PolicyEngine(authorizer = RailAuthorizer.PERMISSIVE)
     private val auditLog = MerkleAuditLog()
-    private val concierge = ConciergeInterface(policyEngine, auditLog)
+    private val rig = testRig()
+    private val concierge = ConciergeInterface(
+        policyEngine,
+        auditLog,
+        rig.gates,
+        rig.anchor,
+    )
 
     @Test
     fun testHandleRequestWithEvidenceTier() {
