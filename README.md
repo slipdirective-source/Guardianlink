@@ -18,7 +18,7 @@ The algorithmic core of every bug-prone module (Merkle checkpointing, MAD shift
 detection, CAS concurrency, Shamir reconstruction, PolicyEngine fail-closed
 invariant) was verified via adversarial Python-ported test batches before this
 Kotlin code was written, confirming the logic is sound. The Kotlin itself is
-compiler-verified (kotlinc 1.9.22, JDK 17) with a 130+ test suite run
+compiler-verified (kotlinc 1.9.22, JDK 17) with a 155-test suite run
 locally plus CI (`.github/workflows/ci.yml`) and CodeQL
 (`.github/workflows/codeql.yml`) on every push.
 
@@ -45,6 +45,7 @@ claims, not truth**:
 | Revocation scan | All revocations known at Gate 8 + seal time | Revocations issued after `evaluate()` returns but before the caller commits — callers MUST re-scan at commit or hold a commit lock |
 | `PolicyEngine` rail lifecycle | Authorization hook (`RailAuthorizer`, default deny-all) | Real authentication — capability tokens / signed admin commands required in production |
 | `FrictionStateMachine` time | Injected clock + backward-jump high-water mark | The clock being truly monotonic — deployments must inject a monotonic source |
+| `DurableMonotonicClock` | Persists at most once per 1000ms of clock advance; resumes at persisted+1000ms (crash-safe, up to 1s forward ratchet on restart) | The state file being writable and un-tampered — persistence is best-effort and crash-monotonicity degrades to the wall clock if the file can't be written; monitor the file in production |
 
 ## Nine Gates policy core (`guardianlink.gates`)
 
@@ -63,6 +64,6 @@ Executable model of the Global Master Codex v2.2 Nine Gates FSM
   scaling with AST-computed impact, signed revocation until seal.
 - Gate 8: prepare-then-commit — `applyAction` is pure, the caller commits
   by adopting `GateOutcome.Integrated.newSubstrate`. The seal is never post-hoc.
-- 130+ tests in `NineGatesTest` / `NineGatesAdversarialTest` cover every gate's
+- 155 tests in `NineGatesTest` / `NineGatesAdversarialTest` cover every gate's
   halt path, cooling scaling, revocation, ledger appends, render injectivity,
   and single-evaluation. Demo in `Main.kt`.
