@@ -157,10 +157,15 @@ private operator fun String.times(count: Int) = this.repeat(count)
 private fun runNineGatesDemo() {
     val rails = Rails()
     val verifiers = object : Verifiers {
+        /** Demo revocation feed — in production this is the deployment's feed, not the request. */
+        var revocationFeed: List<Revocation> = emptyList()
         override fun verifySignature(message: ByteArray, signature: ByteArray) = true
         override fun verifyZk(proof: ByteArray, publicInputs: ByteArray) = true
-        override fun verifyAssent(rendering: String, signature: ByteArray) = true
+        // Demo assents unconditionally; a production verifier MUST check the
+        // signature over (rendering, assentedAtMs, actionId) — see the port contract.
+        override fun verifyAssent(rendering: String, assentedAtMs: Long, actionId: String, signature: ByteArray) = true
         override fun verifyRevocation(revocation: Revocation) = true
+        override fun revocationsFor(actionId: String) = revocationFeed.filter { it.actionId == actionId }
         override fun boundaryPermitted(action: Action, substrate: SubstrateState) = true
         override fun policyRules(action: Action, substrate: SubstrateState) = true
         override fun governanceDivergence(action: Action) = 0.0
@@ -172,34 +177,36 @@ private fun runNineGatesDemo() {
             // sharing the one canonical evaluator.
             ReferenceTransition.apply(substrate, action)
     }
-    val gates = NineGates(rails, verifiers)
+    // The engine owns its clock and ledger — instruments of the deployment,
+    // not arguments of the request.
     val clock = FakeClock(t = 60_000L)
+    val gates = NineGates(rails, verifiers, clock = clock, ledger = MerkleAuditLog())
 
     fun contextFor(
         action: Action,
         rendering: String = render(action),
         revocations: List<Revocation> = emptyList(),
-    ) = GateContext(
-        signal = Signal("req".toByteArray(), snr = 20.0, wellFormed = true),
-        keys = KeyMaterial(
-            "req".toByteArray(), "sig".toByteArray(),
-            doubleArrayOf(0.0, 0.0), doubleArrayOf(0.0, 0.0),
-        ),
-        proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = clock.nowMs()),
-        contextEntropyBits = 2.0,
-        contextParseTrees = 1,
-        action = action,
-        actionId = "demo-1",
-        substrate = SubstrateState(mapOf("profile" to mapOf("name" to "Caleb"))),
-        ledger = MerkleAuditLog(),
-        rendering = rendering,
-        assent = Assent("s_a".toByteArray()),
-        assentedAtMs = 0L, // 60s elapsed; WRITE window is 10s
-        revocations = revocations,
-        clock = clock,
-        intentVector = doubleArrayOf(1.0, 0.0),
-        currentVector = doubleArrayOf(1.0, 0.0),
-    )
+    ): GateContext {
+        verifiers.revocationFeed = revocations
+        return GateContext(
+            signal = Signal("req".toByteArray(), snr = 20.0, wellFormed = true),
+            keys = KeyMaterial(
+                "req".toByteArray(), "sig".toByteArray(),
+                doubleArrayOf(0.0, 0.0), doubleArrayOf(0.0, 0.0),
+            ),
+            proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = clock.nowMs()),
+            contextEntropyBits = 2.0,
+            contextParseTrees = 1,
+            action = action,
+            actionId = "demo-1",
+            substrate = SubstrateState(mapOf("profile" to mapOf("name" to "Caleb"))),
+            rendering = rendering,
+            assent = Assent("s_a".toByteArray()),
+            assentedAtMs = 0L, // 60s elapsed; WRITE window is 10s
+            intentVector = doubleArrayOf(1.0, 0.0),
+            currentVector = doubleArrayOf(1.0, 0.0),
+        )
+    }
 
     val write = Action.Write("profile", mapOf("name" to "Neo"))
     val ok = gates.evaluate(contextFor(write))
