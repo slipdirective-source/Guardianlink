@@ -1,7 +1,5 @@
 package guardianlink.gates
 
-import guardianlink.audit.MerkleAuditLog
-
 /**
  * sigma — the global system state vector (Codex v2.2, §II).
  *
@@ -9,12 +7,18 @@ import guardianlink.audit.MerkleAuditLog
  *
  * TRUST BOUNDARY: every evidence field in this context (signal payload/SNR,
  * biometric templates, proof bytes, entropy bits, parse-tree count, intent
- * vectors, revocation list) is CALLER-SUPPLIED. The gates check these values
+ * vectors) is CALLER-SUPPLIED. The gates check these values
  * for internal consistency, bounds, and finiteness — they do not and cannot
  * verify their truth. A caller that supplies self-consistent false evidence
  * passes the consistency checks; detecting that requires real adapters
  * (attested sensors, signature verification, ZK proof systems) behind the
  * Verifiers ports. See README "Trust boundaries & adapter requirements".
+ *
+ * INSTRUMENT OWNERSHIP: the request carries evidence only. The engine owns
+ * its clock and ledger (constructor-supplied to NineGates, never taken from
+ * the request), and revocations arrive through the Verifiers.revocationsFor
+ * port. A request cannot substitute the engine's time source, audit sink,
+ * or revocation feed.
  */
 data class GateContext(
     /** eta: raw signal payload + measured SNR + well-formedness. */
@@ -33,18 +37,18 @@ data class GateContext(
     val actionId: String,
     /** x: substrate state configuration (bounded projection the gates may inspect). */
     val substrate: SubstrateState,
-    /** M: Merkle audit ledger. Every S_HALT transition is appended. */
-    val ledger: MerkleAuditLog,
     /** r: plain-fact rendering of a shown to the person. Must equal Render(a). */
     val rendering: String,
     /** s_a: person's assent signature over r. Null until given. */
     val assent: Assent?,
-    /** tau-domain timestamp (ms) when r was shown for assent. */
+    /**
+     * Claimed tau-domain timestamp (ms) when r was shown for assent.
+     * Caller-supplied; the assent signature MUST bind (rendering,
+     * assentedAtMs, actionId) — see Verifiers.verifyAssent. The engine
+     * passes all three to the verifier; a verifier that checks only the
+     * rendering is deployment-unsafe.
+     */
     val assentedAtMs: Long,
-    /** Signed revocations of this action, if any. */
-    val revocations: List<Revocation>,
-    /** tau: the one attested monotonic clock serving every time predicate. */
-    val clock: MonotonicClock,
     /** v_int: intent vector at session start. */
     val intentVector: DoubleArray,
     /** v_curr: current intent vector. */
