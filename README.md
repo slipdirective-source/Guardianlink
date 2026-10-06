@@ -18,7 +18,7 @@ The algorithmic core of every bug-prone module (Merkle checkpointing, MAD shift
 detection, CAS concurrency, Shamir reconstruction, PolicyEngine fail-closed
 invariant) was verified via adversarial Python-ported test batches before this
 Kotlin code was written, confirming the logic is sound. The Kotlin itself is
-compiler-verified (kotlinc 1.9.22, JDK 17) with a 155-test suite run
+compiler-verified (kotlinc 1.9.22, JDK 17) with a 165-test suite run
 locally plus CI (`.github/workflows/ci.yml`) and CodeQL
 (`.github/workflows/codeql.yml`) on every push.
 
@@ -40,7 +40,7 @@ claims, not truth**:
 | `Verifiers` ports (signatures, ZK, assent, revocation, policy) | Totality (throw → halt), boolean outcomes | Cryptographic validity itself — real signature/ZK/attestation adapters required |
 | Shamir share categories | Share math (field ranges, no dup x, threshold, mandatory HW label) | That a share labeled `HARDWARE_BIOMETRIC` really came from hardware — attestation binding + VSS commitments required |
 | Trajectory samples | Finiteness, magnitude bounds, self-consistency, windowed anomalies | That samples are authentic — signed/attested sensor streams required |
-| Merkle ledger | Tamper-evidence within the process; engine records carry engine-attested timestamps from the engine-owned clock | Immutability — requires a **durable external anchor** (write-once store / timestamping authority); the demo anchor only prints. Direct external appends (outside the engine) keep the caller-supplied timestamp caveat |
+| Merkle ledger | Tamper-evidence within the process; engine records carry engine-attested timestamps from the engine-owned clock | Immutability — sealed roots are published through the `ExternalAnchor` port; the bundled `AppendOnlyFileAnchor` is host-filesystem grade (durable, tamper-evident, not disk-attacker-proof). Direct external appends (outside the engine) keep the caller-supplied timestamp caveat |
 | Assent idle-expiry (`theta_assent_idle`) | Assent age + ledger silence vs `maxAssentIdleMs` (24h) — an assent dies only when BOTH are exceeded | The silence check reads the engine-owned ledger, and engine appends are engine-attested, closing the forged-liveness vector for engine records — the external anchor remains the recourse for direct ledger writes |
 | Revocation scan | All revocations known at Gate 8 + seal time | Revocations issued after `evaluate()` returns but before the caller commits — callers MUST re-scan at commit or hold a commit lock |
 | `PolicyEngine` rail lifecycle | Authorization hook (`RailAuthorizer`, default deny-all) | Real authentication — capability tokens / signed admin commands required in production |
@@ -68,6 +68,11 @@ Executable model of the Global Master Codex v2.2 Nine Gates FSM
   engine's time source, audit sink, or revocation feed.
 - Gate 8: prepare-then-commit — `applyAction` is pure, the caller commits
   by adopting `GateOutcome.Integrated.newSubstrate`. The seal is never post-hoc.
-- 155 tests across the suite (`NineGatesTest` / `NineGatesAdversarialTest` hold 73 between them) cover every gate's
+- Forced composition: `ConciergeInterface.execute` is the interface's only
+  execution path — every action is forced through the gates, the governed
+  substrate is carried across calls, and each seal root is published through
+  the `ExternalAnchor` port (`AppendOnlyFileAnchor` bundled: append-only,
+  hash-chained anchor file). A throwing anchor fails loud, never silent.
+- 165 tests across the suite (`NineGatesTest` / `NineGatesAdversarialTest` hold 76 between them; `GovernedExecutionTest` covers the composed path and the anchor) cover every gate's
   halt path, cooling scaling, revocation, ledger appends, render injectivity,
   and single-evaluation. Demo in `Main.kt`.
