@@ -22,6 +22,10 @@ import kotlin.concurrent.withLock
  * 3. Entry timestamps are wall-clock ([Instant]) for human audit only.
  *    They are caller-supplied and MUST NOT feed security decisions; every
  *    security time predicate in the Nine Gates uses tau ([MonotonicClock]).
+ *    The [append] overload taking a raw millisecond value is the
+ *    engine-attested path: NineGates supplies timestamps from its owned
+ *    clock, closing the caller-supplied forgery vector for engine records.
+ *    Direct external appenders keep the caller-supplied caveat.
  *
  * Hashing uses domain separation: leaf, internal node, and genesis hashes
  * are computed over distinct prefixes, so a leaf preimage can never be
@@ -63,13 +67,18 @@ class MerkleAuditLog(
 
     fun lastAppendMs(): Long? = lock.withLock { lastAppendEpochMs }
 
-    fun append(payload: ByteArray, now: Instant = Instant.now()): Entry {
+    /**
+     * Engine-attested append: the timestamp is supplied by the caller of
+     * this overload — NineGates passes its owned clock's nowMs(), so engine
+     * records carry engine-attested time, never request-supplied time.
+     */
+    fun append(payload: ByteArray, timestampMs: Long): Entry {
         // Build the entry and advance the chain under the lock...
         val (entry, rootAfter) = lock.withLock {
             val payloadHash = sha256(payload)
             val entry = Entry(
                 index = entries.size,
-                timestampEpochMs = now.toEpochMilli(),
+                timestampEpochMs = timestampMs,
                 payloadHash = payloadHash,
                 previousRoot = currentRoot
             )
@@ -77,8 +86,8 @@ class MerkleAuditLog(
             leafHashes.add(leafHash(entry))
             currentRoot = computeRoot(leafHashes)
             // High-water liveness marker (see lastAppendMs): max() so a
-            // backward jump of the caller-supplied `now` cannot regress it.
-            lastAppendEpochMs = maxOf(lastAppendEpochMs ?: Long.MIN_VALUE, now.toEpochMilli())
+            // backward jump of the supplied time cannot regress it.
+            lastAppendEpochMs = maxOf(lastAppendEpochMs ?: Long.MIN_VALUE, timestampMs)
             Pair(entry, currentRoot)
         }
         // ...but invoke the external anchor OUTSIDE the lock: a callback
@@ -92,6 +101,15 @@ class MerkleAuditLog(
         externalAnchor?.invoke(rootAfter, entry.index)
         return entry
     }
+
+    /**
+     * Caller-supplied timestamp append (wall-clock Instant, for human audit
+     * and external seeding). Keeps the documented caveat: these timestamps
+     * MUST NOT feed security decisions — only the engine-attested overload
+     * above carries engine time.
+     */
+    fun append(payload: ByteArray, now: Instant = Instant.now()): Entry =
+        append(payload, now.toEpochMilli())
 
     /**
      * Full integrity verification. Returns -1 when the log is intact,
