@@ -28,6 +28,7 @@ class NineGatesAdversarialTest {
         var zkOk: Boolean = true,
         var assentOk: Boolean = true,
         var revocationOk: Boolean = false,
+        var revocationList: List<Revocation> = emptyList(),
         var boundaryOk: Boolean = true,
         var rulesOk: Boolean = true,
         var divergence: Double = 0.0,
@@ -49,13 +50,18 @@ class NineGatesAdversarialTest {
             maybeThrow("zk"); return zkOk
         }
 
-        override fun verifyAssent(rendering: String, signature: ByteArray): Boolean {
+        override fun verifyAssent(rendering: String, assentedAtMs: Long, actionId: String, signature: ByteArray): Boolean {
             maybeThrow("assent"); return assentOk
         }
 
         override fun verifyRevocation(revocation: Revocation): Boolean {
             maybeThrow("revocation")
             return revocationFn?.invoke(revocation) ?: revocationOk
+        }
+
+        override fun revocationsFor(actionId: String): List<Revocation> {
+            maybeThrow("revocationFeed")
+            return revocationList.filter { it.actionId == actionId }
         }
 
         override fun boundaryPermitted(action: Action, substrate: SubstrateState): Boolean {
@@ -117,33 +123,37 @@ class NineGatesAdversarialTest {
         }
     }
 
-    /** A context that passes every gate for the given action. */
+    /** A context that passes every gate for the given action. Instruments belong to the engine. */
     private fun passing(
         action: Action,
-        clock: MonotonicClock = FakeClock(20_000L),
+        tau: Long = 20_000L,
         assentedAtMs: Long = 0L,
-        revocations: List<Revocation> = emptyList(),
     ): GateContext = GateContext(
         signal = Signal("req".toByteArray(), snr = 20.0, wellFormed = true),
         keys = KeyMaterial(
             "req".toByteArray(), "sig".toByteArray(),
             doubleArrayOf(0.0, 0.0), doubleArrayOf(0.0, 0.0),
         ),
-        proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = clock.nowMs()),
+        proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = tau),
         contextEntropyBits = 2.0,
         contextParseTrees = 1,
         action = action,
         actionId = "a1",
         substrate = SubstrateState(recordPool.associateWith { mapOf("name" to "x") }),
-        ledger = MerkleAuditLog(),
         rendering = render(action),
         assent = Assent("s_a".toByteArray()),
         assentedAtMs = assentedAtMs,
-        revocations = revocations,
-        clock = clock,
         intentVector = doubleArrayOf(1.0, 0.0),
         currentVector = doubleArrayOf(1.0, 0.0),
     )
+
+    /** Fresh engine with isolated instruments; tau seeds the engine clock. */
+    private fun engineFor(v: Verifiers, tau: Long = 20_000L): NineGates =
+        NineGates(rails, v, clock = FakeClock(tau), ledger = MerkleAuditLog())
+
+    /** Fresh engine with a caller-chosen clock (hostile-clock tests). */
+    private fun engineForClock(v: Verifiers, clock: MonotonicClock): NineGates =
+        NineGates(rails, v, clock = clock, ledger = MerkleAuditLog())
 
     private fun assertHalted(o: GateOutcome): GateOutcome.Halted {
         assertTrue(o is GateOutcome.Halted, "expected Halted but was $o")
@@ -191,7 +201,7 @@ class NineGatesAdversarialTest {
         val rng = Random(0xC0DE)
         repeat(40) {
             val v = FuzzVerifiers()
-            val gates = NineGates(rails, v)
+            val gates = engineFor(v)
             val a = rng.action(3)
             val r = render(a)
             val positions = r.indices.shuffled(rng).take(8)
@@ -304,7 +314,7 @@ class NineGatesAdversarialTest {
         var c: Condition = Condition.FieldEquals("profile", "f", "v")
         repeat(rails.maxConditionDepth + 2) { c = Condition.Not(c) }
         val a = Action.Guarded(c, Action.Read("profile", listOf("f")))
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
         assertEquals(0, h.atGate)
         assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
     }
@@ -313,7 +323,7 @@ class NineGatesAdversarialTest {
     fun gate0HaltsOnManyConditionNodes() {
         val c = Condition.And(List(rails.maxConditionNodes + 1) { Condition.FieldEquals("profile", "f", "v") })
         val a = Action.Guarded(c, Action.Read("profile", listOf("f")))
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
         assertEquals(0, h.atGate)
         assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
     }
@@ -322,7 +332,7 @@ class NineGatesAdversarialTest {
     fun gate0HaltsOnOversizedStringAtom() {
         val big = "x".repeat(rails.maxStringBytes + 1)
         val a = Action.Read(big, listOf("f"))
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
         assertEquals(0, h.atGate)
         assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
     }
@@ -333,7 +343,7 @@ class NineGatesAdversarialTest {
         val s = "é".repeat(200)
         assertEquals(400, s.toByteArray(Charsets.UTF_8).size)
         val a = Action.Read("profile", listOf(s))
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
         assertEquals(0, h.atGate)
         assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
     }
@@ -341,7 +351,7 @@ class NineGatesAdversarialTest {
     @Test
     fun gate0HaltsOnTooManyWriteFields() {
         val a = Action.Write("profile", (1..rails.maxWriteFields + 1).associate { "f$it" to "v" })
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
         assertEquals(0, h.atGate)
         assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
     }
@@ -349,7 +359,7 @@ class NineGatesAdversarialTest {
     @Test
     fun gate0HaltsOnTooManyReadFields() {
         val a = Action.Read("profile", List(rails.maxReadFields + 1) { "f$it" })
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
         assertEquals(0, h.atGate)
         assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
     }
@@ -361,7 +371,7 @@ class NineGatesAdversarialTest {
         val writes = List(8) { i -> Action.Write("w$i", (1..rails.maxWriteFields).associate { "k$it" to bigVal }) }
         val a = Action.Sequence(writes)
         assertTrue(payloadBytes(a) > rails.maxPayloadBytes, "test setup: payload must exceed bound")
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
         assertEquals(0, h.atGate)
         assertTrue(h.reason.contains("theta_ast"), "wrong halt reason: ${h.reason}")
     }
@@ -376,7 +386,7 @@ class NineGatesAdversarialTest {
             c,
             Action.Write("profile", (1..rails.maxWriteFields).associate { "f$it" to s }),
         )
-        val o = NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a)))
+        val o = engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a)))
         assertTrue(o !is GateOutcome.Halted || (o as GateOutcome.Halted).atGate != 0,
             "boundary-legal action halted at Gate 0: $o")
     }
@@ -405,7 +415,7 @@ class NineGatesAdversarialTest {
             Action.Read("profile", listOf("name")),
             Action.Read("profile", listOf("name")),
         )
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
         assertEquals(2, h.atGate, "condition smuggling past isolation: $h")
         assertTrue(h.reason.contains("phi_iso"), "wrong halt reason: ${h.reason}")
     }
@@ -419,7 +429,7 @@ class NineGatesAdversarialTest {
             )),
             Action.Read("profile", listOf("name")),
         )
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a).copy(rendering = render(a))))
         assertEquals(2, h.atGate, "nested condition smuggling past isolation: $h")
         assertTrue(h.reason.contains("phi_iso"), "wrong halt reason: ${h.reason}")
     }
@@ -459,22 +469,22 @@ class NineGatesAdversarialTest {
             val t = 100_000L
             // elapsed = window - 1 -> halt on theta_cool
             var h = assertHalted(
-                NineGates(rails, FuzzVerifiers()).evaluate(
-                    passing(a, FakeClock(t), assentedAtMs = t - window + 1)
+                engineFor(FuzzVerifiers(), t).evaluate(
+                    passing(a, tau = t, assentedAtMs = t - window + 1)
                 )
             )
             assertEquals(7, h.atGate)
             assertTrue(h.reason.contains("theta_cool"), h.reason)
             // elapsed = window -> integrate
             assertIntegrated(
-                NineGates(rails, FuzzVerifiers()).evaluate(
-                    passing(a, FakeClock(t), assentedAtMs = t - window)
+                engineFor(FuzzVerifiers(), t).evaluate(
+                    passing(a, tau = t, assentedAtMs = t - window)
                 )
             )
             // elapsed = window + 1 -> integrate
             assertIntegrated(
-                NineGates(rails, FuzzVerifiers()).evaluate(
-                    passing(a, FakeClock(t), assentedAtMs = t - window - 1)
+                engineFor(FuzzVerifiers(), t).evaluate(
+                    passing(a, tau = t, assentedAtMs = t - window - 1)
                 )
             )
         }
@@ -488,19 +498,19 @@ class NineGatesAdversarialTest {
     fun gate0Boundaries() {
         fun seq(n: Int) = Action.Sequence(List(n) { Action.Read("profile", listOf("name")) })
         // seq(n) has n+1 nodes; bound is 64.
-        assertIntegrated(NineGates(rails, FuzzVerifiers()).evaluate(passing(seq(63))))
-        assertEquals(0, assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(seq(64)))).atGate)
+        assertIntegrated(engineFor(FuzzVerifiers()).evaluate(passing(seq(63))))
+        assertEquals(0, assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(seq(64)))).atGate)
 
         fun nest(d: Int): Action =
             if (d <= 1) Action.Read("profile", listOf("name"))
             else Action.Guarded(Condition.FieldEquals("profile", "name", "x"), nest(d - 1))
         // nest(d) has depth d; bound is 8.
-        assertIntegrated(NineGates(rails, FuzzVerifiers()).evaluate(passing(nest(8))))
-        assertEquals(0, assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(nest(9)))).atGate)
+        assertIntegrated(engineFor(FuzzVerifiers()).evaluate(passing(nest(8))))
+        assertEquals(0, assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(nest(9)))).atGate)
 
         assertEquals(
             0,
-            assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(Action.Sequence(emptyList())))).atGate
+            assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(Action.Sequence(emptyList())))).atGate
         )
     }
 
@@ -517,14 +527,14 @@ class NineGatesAdversarialTest {
         for (idOk in listOf(true, false)) {
             for (sigOk in listOf(true, false)) {
                 for (timeOk in listOf(true, false)) {
-                    val v = FuzzVerifiers(revocationOk = sigOk)
                     val rev = Revocation(
                         if (idOk) "a1" else "other",
                         "s".toByteArray(),
                         if (timeOk) t - 1000 else t + 1000
                     )
-                    val out = NineGates(rails, v).evaluate(
-                        passing(Action.Read("profile", listOf("name")), FakeClock(t), revocations = listOf(rev))
+                    val v = FuzzVerifiers(revocationOk = sigOk, revocationList = listOf(rev))
+                    val out = engineFor(v, t).evaluate(
+                        passing(Action.Read("profile", listOf("name")), tau = t)
                     )
                     if (idOk && sigOk) {
                         val h = assertHalted(out)
@@ -560,11 +570,11 @@ class NineGatesAdversarialTest {
             "currentVector" to base.copy(currentVector = doubleArrayOf(nan, nan)),
         )
         for ((name, ctx) in cases) {
-            val out = NineGates(rails, FuzzVerifiers()).evaluate(ctx)
+            val out = engineFor(FuzzVerifiers()).evaluate(ctx)
             assertTrue(out is GateOutcome.Halted, "NaN $name INTEGRATED")
         }
         val v = FuzzVerifiers(divergence = nan)
-        val out = NineGates(rails, v).evaluate(base)
+        val out = engineFor(v).evaluate(base)
         assertTrue(out is GateOutcome.Halted, "NaN divergence INTEGRATED")
     }
 
@@ -583,7 +593,7 @@ class NineGatesAdversarialTest {
                 ),
             )
             for (ctx in cases) {
-                val out = NineGates(rails, FuzzVerifiers()).evaluate(ctx)
+                val out = engineFor(FuzzVerifiers()).evaluate(ctx)
                 assertTrue(out is GateOutcome.Halted, "infinite input ($inf) INTEGRATED")
             }
         }
@@ -598,11 +608,9 @@ class NineGatesAdversarialTest {
     fun throwingVerifiersNeverEscape() {
         val ports = listOf("sig", "zk", "assent", "revocation", "boundary", "rules", "divergence", "loop", "apply")
         for (p in ports) {
-            val v = FuzzVerifiers(throwPorts = setOf(p), revocationOk = true)
-            val revs = if (p == "revocation") listOf(Revocation("a1", "s".toByteArray(), 1000L)) else emptyList()
-            val out = NineGates(rails, v).evaluate(
-                passing(Action.Read("profile", listOf("name")), revocations = revs)
-            )
+            val v = FuzzVerifiers(throwPorts = setOf(p), revocationOk = true,
+                revocationList = if (p == "revocation") listOf(Revocation("a1", "s".toByteArray(), 1000L)) else emptyList())
+            val out = engineFor(v).evaluate(passing(Action.Read("profile", listOf("name"))))
             assertTrue(out is GateOutcome.Halted, "throwing port '$p' ESCAPED the engine")
         }
     }
@@ -617,7 +625,7 @@ class NineGatesAdversarialTest {
         run {
             val v = FuzzVerifiers(evilApply = { _, _ -> throw AssertionError("hostile Error") })
             val ledger = MerkleAuditLog()
-            val h = assertHalted(NineGates(rails, v).evaluate(passing(action).copy(ledger = ledger)))
+            val h = assertHalted(NineGates(rails, v, clock = FakeClock(20_000L), ledger = ledger).evaluate(passing(action)))
             assertTrue(h.reason.contains("threw"), "expected throw-halt, got: ${h.reason}")
             assertEquals(1, ledger.size, "Error-throwing transition must leave a halt ledger record")
         }
@@ -629,7 +637,7 @@ class NineGatesAdversarialTest {
                     throw StackOverflowError("hostile recursion")
             }
             val ledger = MerkleAuditLog()
-            val h = assertHalted(NineGates(rails, v).evaluate(passing(action).copy(ledger = ledger)))
+            val h = assertHalted(NineGates(rails, v, clock = FakeClock(20_000L), ledger = ledger).evaluate(passing(action)))
             assertEquals(1, h.atGate, "expected halt at gate 1, got $h")
             assertEquals(1, ledger.size, "Error-throwing verifier must leave a halt ledger record")
         }
@@ -641,15 +649,14 @@ class NineGatesAdversarialTest {
         // Long.MIN_VALUE, defeating the freshness window. Must halt at gate 3.
         val action = Action.Write("profile", mapOf("name" to "Neo"))
         val v = FuzzVerifiers()
-        val gates = NineGates(rails, v)
+        val gates = engineFor(v)
         val ancient = passing(action).copy(
             proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = Long.MIN_VALUE)
         )
         val h = assertHalted(gates.evaluate(ancient))
         assertEquals(3, h.atGate, "ancient proof must halt at gate 3, got: $h")
         // Boundary: just inside the window is fresh and integrates.
-        val clock = FakeClock(20_000L)
-        val fresh = passing(action, clock = clock).copy(
+        val fresh = passing(action).copy(
             proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = 20_000L - rails.deltaT + 1)
         )
         assertIntegrated(gates.evaluate(fresh))
@@ -665,7 +672,7 @@ class NineGatesAdversarialTest {
         val rng = Random(0xBADC10C)
         repeat(300) {
             val v = FuzzVerifiers()
-            val out = NineGates(rails, v).evaluate(passing(rng.action(3), ChaosClock(rng)))
+            val out = engineForClock(v, ChaosClock(rng)).evaluate(passing(rng.action(3)))
             assertTrue(
                 out is GateOutcome.Integrated || out is GateOutcome.Halted,
                 "hostile clock produced impossible outcome: $out"
@@ -691,10 +698,11 @@ class NineGatesAdversarialTest {
                 5 -> { /* all pass */ }
             }
             val ctx = passing(rng.action(3))
-            val before = ctx.ledger.size
-            NineGates(rails, v).evaluate(ctx)
-            assertEquals(before + 1, ctx.ledger.size, "evaluate must append exactly one ledger entry")
-            assertEquals(-1, ctx.ledger.verifyIntegrity())
+            val gates = engineFor(v)
+            val before = gates.ledger.size
+            gates.evaluate(ctx)
+            assertEquals(before + 1, gates.ledger.size, "evaluate must append exactly one ledger entry")
+            assertEquals(-1, gates.ledger.verifyIntegrity())
         }
     }
 
@@ -727,7 +735,7 @@ class NineGatesAdversarialTest {
                     ghost
                 )
             }
-            val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(passing(a)))
+            val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(passing(a)))
             assertEquals(2, h.atGate, "smuggled record not caught at gate 2: $a")
             assertTrue(h.reason.contains("phi_iso"), h.reason)
         }
@@ -743,7 +751,7 @@ class NineGatesAdversarialTest {
         val v = FuzzVerifiers()
         v.evilApply = { sub, _ -> sub.copy(records = sub.records + ("planted" to mapOf("x" to "y"))) }
         val h = assertHalted(
-            NineGates(rails, v).evaluate(passing(Action.Read("profile", listOf("name"))))
+            engineFor(v).evaluate(passing(Action.Read("profile", listOf("name"))))
         )
         assertEquals(6, h.atGate)
         assertTrue(h.reason.contains("psi_inv"), h.reason)
@@ -758,7 +766,7 @@ class NineGatesAdversarialTest {
     @Test
     fun transitionEvaluatedExactlyOnceOnFullPass() {
         val v = FuzzVerifiers()
-        val out = NineGates(rails, v).evaluate(passing(Action.Write("profile", mapOf("name" to "Neo"))))
+        val out = engineFor(v).evaluate(passing(Action.Write("profile", mapOf("name" to "Neo"))))
         assertTrue(out is GateOutcome.Integrated, "expected Integrated but was $out")
         assertEquals(1, v.applyCalls, "transition evaluated ${v.applyCalls}x, must be exactly once")
     }
@@ -772,7 +780,7 @@ class NineGatesAdversarialTest {
         val yState = SubstrateState(mapOf("profile" to mapOf("name" to "Y")))
         var calls = 0
         v.evilApply = { _, _ -> calls++; if (calls == 1) xState else yState }
-        val out = NineGates(rails, v).evaluate(passing(Action.Write("profile", mapOf("name" to "Z"))))
+        val out = engineFor(v).evaluate(passing(Action.Write("profile", mapOf("name" to "Z"))))
         val sealed = assertIntegrated(out).newSubstrate
         assertEquals(1, v.applyCalls, "adapter invoked more than once")
         assertEquals("X", sealed.records["profile"]?.get("name"),
@@ -782,7 +790,7 @@ class NineGatesAdversarialTest {
     @Test
     fun throwingTransitionHaltsWithoutSecondEvaluation() {
         val v = FuzzVerifiers(throwPorts = setOf("apply"))
-        val out = NineGates(rails, v).evaluate(passing(Action.Read("profile", listOf("name"))))
+        val out = engineFor(v).evaluate(passing(Action.Read("profile", listOf("name"))))
         assertTrue(out is GateOutcome.Halted, "throwing transition ESCAPED")
         assertEquals(1, v.applyCalls, "throwing adapter was retried")
     }
@@ -794,20 +802,18 @@ class NineGatesAdversarialTest {
 
     @Test
     fun gate3HaltsOnFutureDatedProof() {
-        val clock = FakeClock(20_000L)
-        val base = passing(Action.Read("profile", listOf("name")), clock = clock)
-        val ctx = base.copy(proofs = base.proofs.copy(issuedAtMs = clock.nowMs() + 60_000L))
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        val base = passing(Action.Read("profile", listOf("name")))
+        val ctx = base.copy(proofs = base.proofs.copy(issuedAtMs = 20_000L + 60_000L))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(ctx))
         assertEquals(3, h.atGate, "future-dated proof not rejected: $h")
         assertTrue(h.reason.contains("theta_time"), h.reason)
     }
 
     @Test
     fun gate3HaltsOnStaleProof() {
-        val clock = FakeClock(20_000L)
-        val base = passing(Action.Read("profile", listOf("name")), clock = clock)
-        val ctx = base.copy(proofs = base.proofs.copy(issuedAtMs = clock.nowMs() - rails.deltaT - 1))
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        val base = passing(Action.Read("profile", listOf("name")))
+        val ctx = base.copy(proofs = base.proofs.copy(issuedAtMs = 20_000L - rails.deltaT - 1))
+        val h = assertHalted(engineFor(FuzzVerifiers()).evaluate(ctx))
         assertEquals(3, h.atGate)
         assertTrue(h.reason.contains("theta_time"), h.reason)
     }
@@ -815,11 +821,10 @@ class NineGatesAdversarialTest {
     @Test
     fun gate8HaltsOnFutureDatedRevocation() {
         // Valid signature + future date: fail CLOSED, never ignored.
-        val clock = FakeClock(20_000L)
-        val rev = Revocation("a1", "s".toByteArray(), clock.nowMs() + 60_000L)
+        val rev = Revocation("a1", "s".toByteArray(), 20_000L + 60_000L)
         val h = assertHalted(
-            NineGates(rails, FuzzVerifiers(revocationOk = true)).evaluate(
-                passing(Action.Read("profile", listOf("name")), clock = clock, revocations = listOf(rev))
+            engineFor(FuzzVerifiers(revocationOk = true, revocationList = listOf(rev))).evaluate(
+                passing(Action.Read("profile", listOf("name")))
             )
         )
         assertEquals(8, h.atGate, "future-dated revocation ignored (fail-open): $h")
@@ -828,11 +833,10 @@ class NineGatesAdversarialTest {
 
     @Test
     fun gate8HaltsOnPastDatedRevocation() {
-        val clock = FakeClock(20_000L)
-        val rev = Revocation("a1", "s".toByteArray(), clock.nowMs() - 1_000L)
+        val rev = Revocation("a1", "s".toByteArray(), 20_000L - 1_000L)
         val h = assertHalted(
-            NineGates(rails, FuzzVerifiers(revocationOk = true)).evaluate(
-                passing(Action.Read("profile", listOf("name")), clock = clock, revocations = listOf(rev))
+            engineFor(FuzzVerifiers(revocationOk = true, revocationList = listOf(rev))).evaluate(
+                passing(Action.Read("profile", listOf("name")))
             )
         )
         assertEquals(8, h.atGate)
@@ -843,14 +847,12 @@ class NineGatesAdversarialTest {
     fun sealTimeRescanCatchesLateValidRevocation() {
         // Revocation verifies invalid at Gate 8's scan but valid at the
         // seal-time re-scan: the narrowed check/commit gap must still halt.
-        val v = FuzzVerifiers()
+        val rev = Revocation("a1", "s".toByteArray(), 1_000L)
+        val v = FuzzVerifiers(revocationList = listOf(rev))
         var calls = 0
         v.revocationFn = { calls++; calls >= 2 }
-        val rev = Revocation("a1", "s".toByteArray(), 1_000L)
         val h = assertHalted(
-            NineGates(rails, v).evaluate(
-                passing(Action.Read("profile", listOf("name")), revocations = listOf(rev))
-            )
+            engineFor(v).evaluate(passing(Action.Read("profile", listOf("name"))))
         )
         assertEquals(8, h.atGate)
         assertTrue(h.reason.contains("theta_norev"), h.reason)
@@ -966,7 +968,7 @@ class NineGatesAdversarialTest {
             Action.Write("profile", mapOf("name" to "Then")),
             Action.Write("profile", mapOf("name" to "Else")),
         )
-        val out = NineGates(rails, v).evaluate(passing(action))
+        val out = engineFor(v).evaluate(passing(action))
         val sealed = assertIntegrated(out).newSubstrate
         assertEquals("Else", sealed.records["profile"]?.get("name"))
         assertEquals(1, v.applyCalls)
@@ -982,9 +984,9 @@ class NineGatesAdversarialTest {
         val e1 = base.copy(
             keys = base.keys.copy(biometricTemplate = doubleArrayOf(), enrolledTemplate = doubleArrayOf())
         )
-        assertEquals(1, assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(e1)).atGate)
+        assertEquals(1, assertHalted(engineFor(FuzzVerifiers()).evaluate(e1)).atGate)
         val e2 = base.copy(intentVector = doubleArrayOf(), currentVector = doubleArrayOf())
-        assertEquals(5, assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(e2)).atGate)
+        assertEquals(5, assertHalted(engineFor(FuzzVerifiers()).evaluate(e2)).atGate)
     }
 
     // ------------------------------------------------------------------
@@ -1003,9 +1005,9 @@ class NineGatesAdversarialTest {
     @Test
     fun assentIdleOldAssentSilentLedgerHalts() {
         val tau = 200_000_000L
-        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), 0L)
-            .copy(ledger = ledgerWithAppendsAt(0L))
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        val gates = NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L))
+        val ctx = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = 0L)
+        val h = assertHalted(gates.evaluate(ctx))
         assertEquals(7, h.atGate)
         assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
     }
@@ -1014,8 +1016,8 @@ class NineGatesAdversarialTest {
     fun assentIdleEmptyLedgerOldAssentHalts() {
         // Null snapshot falls back to the assent time: brand-new ledger +
         // old assent = expired, fail closed.
-        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(200_000_000L), 0L)
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        val ctx = passing(Action.Read("profile", listOf("name")), tau = 200_000_000L, assentedAtMs = 0L)
+        val h = assertHalted(engineFor(FuzzVerifiers(), 200_000_000L).evaluate(ctx))
         assertEquals(7, h.atGate)
         assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
     }
@@ -1024,9 +1026,9 @@ class NineGatesAdversarialTest {
     fun assentIdleOldAssentActiveLedgerPasses() {
         val tau = 200_000_000L
         // Old assent, but the ledger was active 1ms ago: (b) fails → pass.
-        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), 0L)
-            .copy(ledger = ledgerWithAppendsAt(tau - 1))
-        assertIntegrated(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        val gates = NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(tau - 1))
+        val ctx = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = 0L)
+        assertIntegrated(gates.evaluate(ctx))
     }
 
     @Test
@@ -1034,16 +1036,16 @@ class NineGatesAdversarialTest {
         val tau = 200_000_000L
         // Assent 10s ago: fresh ((a) fails), though the ledger is dark.
         // READ cooling needs 5s elapsed — 10s clears it.
-        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), tau - 10_000L)
-            .copy(ledger = ledgerWithAppendsAt(0L))
-        assertIntegrated(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        val gates = NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L))
+        val ctx = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = tau - 10_000L)
+        assertIntegrated(gates.evaluate(ctx))
     }
 
     @Test
     fun assentIdleFutureDatedAssentHalts() {
         val tau = 200_000_000L
-        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), tau + 1)
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        val ctx = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = tau + 1)
+        val h = assertHalted(engineFor(FuzzVerifiers(), tau).evaluate(ctx))
         assertEquals(7, h.atGate)
         assertTrue(h.reason.contains("future"), h.reason)
     }
@@ -1053,16 +1055,75 @@ class NineGatesAdversarialTest {
         val idle = rails.maxAssentIdleMs
         val tau = 200_000_000L
         // Just under the rail: passes.
-        val under = passing(Action.Read("profile", listOf("name")), FakeClock(tau), tau - (idle - 1))
-            .copy(ledger = ledgerWithAppendsAt(0L))
-        assertIntegrated(NineGates(rails, FuzzVerifiers()).evaluate(under))
+        val under = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = tau - (idle - 1))
+        assertIntegrated(
+            NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L)).evaluate(under))
         // Just over on both conditions: halts. Fresh ledger: the passing
-        // run above sealed into `under`'s ledger, so use a new one.
-        val over = passing(Action.Read("profile", listOf("name")), FakeClock(tau), tau - (idle + 1))
-            .copy(ledger = ledgerWithAppendsAt(0L))
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(over))
+        // run above sealed into its engine's ledger, so use a new one.
+        val over = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = tau - (idle + 1))
+        val h = assertHalted(
+            NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L)).evaluate(over))
         assertEquals(7, h.atGate)
         assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
+    }
+
+    // ------------------------------------------------------------------
+    // Assent binding: verifyAssent must receive (rendering, assentedAtMs,
+    // actionId) so a real verifier can bind the signature to time and
+    // action. Backdating, refreshing, and replay are defeated by the
+    // binding — the engine supplies the triple, the verifier enforces it.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun assentVerifierReceivesBoundTriple() {
+        // Without the triple no verifier can bind the signature to time
+        // and action, and backdating/refresh/replay go undetected.
+        var seenTriple: Triple<String, Long, String>? = null
+        var seenSig: ByteArray? = null
+        val capturing = object : Verifiers by FuzzVerifiers() {
+            override fun verifyAssent(rendering: String, assentedAtMs: Long, actionId: String, signature: ByteArray): Boolean {
+                seenTriple = Triple(rendering, assentedAtMs, actionId)
+                seenSig = signature
+                return true
+            }
+        }
+        val action = Action.Write("profile", mapOf("name" to "Neo"))
+        val ctx = passing(action, assentedAtMs = 5_000L)
+        assertIntegrated(engineFor(capturing).evaluate(ctx))
+        assertEquals(Triple(render(action), 5_000L, "a1"), seenTriple)
+        assertTrue(seenSig!!.contentEquals("s_a".toByteArray()))
+    }
+
+    @Test
+    fun bindingVerifierDefeatsBackdatedAssent() {
+        // A verifier enforcing the binding contract defeats backdating:
+        // the engine supplies the claimed time; the signature must match it.
+        val action = Action.Read("profile", listOf("name"))
+        val r = render(action)
+        fun sigFor(t: Long) = "$r|$t|a1".toByteArray()
+        val binding = object : Verifiers by FuzzVerifiers() {
+            override fun verifyAssent(rendering: String, assentedAtMs: Long, actionId: String, signature: ByteArray): Boolean =
+                rendering == r && actionId == "a1" && signature.contentEquals(sigFor(assentedAtMs))
+        }
+        // Honest: claimed time matches the signed time (5s elapsed clears
+        // the READ cooling window).
+        val good = passing(action, assentedAtMs = 15_000L).copy(assent = Assent(sigFor(15_000L)))
+        assertIntegrated(engineFor(binding).evaluate(good))
+        // Backdated: claims 15_000 but was signed at 19_999 — 1ms ago,
+        // skipping the cooling window. The binding mismatch halts.
+        val evil = passing(action, assentedAtMs = 15_000L).copy(assent = Assent(sigFor(19_999L)))
+        val h = assertHalted(engineFor(binding).evaluate(evil))
+        assertEquals(7, h.atGate)
+        assertTrue(h.reason.contains("theta_assent"), h.reason)
+    }
+
+    @Test
+    fun throwingRevocationFeedHalts() {
+        // revocationsFor is a port like any other: a throwing feed must
+        // halt the engine, never propagate.
+        val v = FuzzVerifiers(throwPorts = setOf("revocationFeed"))
+        val h = assertHalted(engineFor(v).evaluate(passing(Action.Read("profile", listOf("name")))))
+        assertTrue(h.reason.contains("theta_norev"), h.reason)
     }
 
     @Test
@@ -1073,8 +1134,8 @@ class NineGatesAdversarialTest {
         val tau = 200_000_000L
         val l = MerkleAuditLog()
         l.append("seed".toByteArray(), java.time.Instant.ofEpochMilli(Long.MIN_VALUE))
-        val ctx = passing(Action.Read("profile", listOf("name")), FakeClock(tau), 0L).copy(ledger = l)
-        val h = assertHalted(NineGates(rails, FuzzVerifiers()).evaluate(ctx))
+        val ctx = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = 0L)
+        val h = assertHalted(NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = l).evaluate(ctx))
         assertEquals(7, h.atGate)
         assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
     }
