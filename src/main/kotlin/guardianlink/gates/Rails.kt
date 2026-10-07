@@ -12,7 +12,6 @@ package guardianlink.gates
  */
 data class Rails(
     val gammaNoise: Double = 10.0,        // Gate 0: minimum signal SNR (theta_snr)
-    val epsilonBio: Double = 0.15,        // Gate 1: biometric distance bound (theta_bio)
     val hMax: Double = 4.0,              // Gate 4: context entropy bound, bits (theta_ent)
     val epsilonDrift: Double = 0.05,     // Gate 5: intent-drift cosine bound (theta_drift)
     val epsilonGovernance: Double = 0.1, // Gate 6: governance divergence bound (psi_align)
