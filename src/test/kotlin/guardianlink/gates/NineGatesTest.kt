@@ -1,6 +1,9 @@
 package guardianlink.gates
 
 import guardianlink.audit.MerkleAuditLog
+import guardianlink.voice.GmmUbmVoiceVerifier
+import guardianlink.voice.TestVoice
+import guardianlink.voice.VoiceTemplate
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -59,6 +62,15 @@ class NineGatesTest {
     private val rails = Rails()
 
     /**
+     * Voice anchor for this test instance (JUnit constructs a fresh
+     * instance per test): the engine's biometric verifier and the
+     * deployment-enrolled template. passingContext() issues challenges on
+     * this same verifier, so ceremony audio always matches the engine's
+     * active challenge.
+     */
+    private val voiceAnchor: Pair<GmmUbmVoiceVerifier, VoiceTemplate> by lazy { TestVoice.anchor() }
+
+    /**
      * Fresh engine per test: the engine owns its clock and ledger, so each
      * test gets isolated instruments — and a fresh verifier set, so tests
      * never leak port state into each other through execution order.
@@ -68,7 +80,10 @@ class NineGatesTest {
     private fun freshGates(
         tau: Long = 20_000L,
         v: TestVerifiers = TestVerifiers(),
-    ): NineGates = NineGates(rails, v, clock = FakeClock(tau), ledger = MerkleAuditLog())
+    ): NineGates = NineGates(
+        rails, v, voiceAnchor.first, voiceAnchor.second,
+        clock = FakeClock(tau), ledger = MerkleAuditLog(),
+    )
 
     /** kotlin-test 1.9 has no assertIsInstance; this is the equivalent. */
     private inline fun <reified T : GateOutcome> assertOutcome(outcome: GateOutcome): T {
@@ -89,8 +104,6 @@ class NineGatesTest {
             keys = KeyMaterial(
                 message = "req".toByteArray(),
                 signature = "sig".toByteArray(),
-                biometricTemplate = doubleArrayOf(0.0, 0.0),
-                enrolledTemplate = doubleArrayOf(0.0, 0.0),
             ),
             proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = tau),
             contextEntropyBits = 2.0,
@@ -101,6 +114,7 @@ class NineGatesTest {
             rendering = rendered,
             assent = Assent("s_a".toByteArray()),
             assentedAtMs = 0L,
+            assentAudio = TestVoice.acceptingSample(voiceAnchor.first),
             intentVector = doubleArrayOf(1.0, 0.0),
             currentVector = doubleArrayOf(1.0, 0.0),
         )
@@ -143,18 +157,6 @@ class NineGatesTest {
     @Test
     fun testGate1HaltsOnBadSignature() {
         val halted = assertOutcome<GateOutcome.Halted>(freshGates(v = TestVerifiers(sigOk = false)).evaluate(passingContext()))
-        assertEquals(1, halted.atGate)
-    }
-
-    @Test
-    fun testGate1HaltsOnBiometricMismatch() {
-        val ctx = passingContext().copy(
-            keys = KeyMaterial(
-                "req".toByteArray(), "sig".toByteArray(),
-                doubleArrayOf(0.0, 0.0), doubleArrayOf(1.0, 1.0),
-            )
-        )
-        val halted = assertOutcome<GateOutcome.Halted>(freshGates().evaluate(ctx))
         assertEquals(1, halted.atGate)
     }
 
@@ -228,7 +230,10 @@ class NineGatesTest {
         // DELETE is DESTRUCTIVE -> 15_000 ms window.
         val delete = Action.Delete("profile")
         val clock = FakeClock(t = 20_000L)
-        val gates = NineGates(rails, TestVerifiers(), clock = clock, ledger = MerkleAuditLog())
+        val gates = NineGates(
+            rails, TestVerifiers(), voiceAnchor.first, voiceAnchor.second,
+            clock = clock, ledger = MerkleAuditLog(),
+        )
         val tooSoon = passingContext(action = delete, tau = clock.nowMs()).copy(assentedAtMs = 8_000L)
         assertOutcome<GateOutcome.Halted>(gates.evaluate(tooSoon))
 
@@ -268,15 +273,24 @@ class NineGatesTest {
     }
 
     @Test
-    fun testFailClosedOnVectorMismatch() {
-        // Ambiguous identity evidence -> halt, never pass.
-        val ctx = passingContext().copy(
-            keys = KeyMaterial(
-                "req".toByteArray(), "sig".toByteArray(),
-                doubleArrayOf(0.0), doubleArrayOf(0.0, 0.0),
-            )
-        )
+    fun testFailClosedOnVoiceMismatch() {
+        // A different voice at the assent ceremony -> halt at Gate 7, never pass.
+        val (vv, _) = voiceAnchor
+        val challenge = vv.issueChallenge()
+        val impostorAudio = TestVoice.impostorSays(challenge.phraseId)
+        val ctx = passingContext().copy(assentAudio = impostorAudio)
         val halted = assertOutcome<GateOutcome.Halted>(freshGates().evaluate(ctx))
-        assertEquals(1, halted.atGate)
+        assertEquals(7, halted.atGate)
+    }
+
+    @Test
+    fun testFailClosedOnLivenessMismatch() {
+        // Right voice, wrong phrase: speaker passes, liveness fails -> halt at 7.
+        val (vv, _) = voiceAnchor
+        val challenge = vv.issueChallenge()
+        val wrongPhrase = TestVoice.phraseIds.first { it != challenge.phraseId }
+        val ctx = passingContext().copy(assentAudio = TestVoice.personSays(wrongPhrase))
+        val halted = assertOutcome<GateOutcome.Halted>(freshGates().evaluate(ctx))
+        assertEquals(7, halted.atGate)
     }
 }
