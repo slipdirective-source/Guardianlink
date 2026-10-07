@@ -1,6 +1,9 @@
 package guardianlink.gates
 
 import guardianlink.audit.MerkleAuditLog
+import guardianlink.voice.BiometricVerifier
+import guardianlink.voice.VerificationResult
+import guardianlink.voice.VoiceTemplate
 import kotlin.math.sqrt
 
 /**
@@ -86,18 +89,23 @@ sealed interface GateOutcome {
  * unverified mutation drops execution to S_HALT. Every S_HALT transition
  * — including revocations — is appended to the ledger M.
  *
- * INSTRUMENT OWNERSHIP: the engine owns its clock and ledger. They are
- * constructor-supplied (defaulting to the system monotonic clock and a
- * fresh in-process ledger) and NEVER taken from the request — a request
- * cannot substitute the engine's time source or audit sink, which is what
- * the per-request GateContext ledger/clock allowed. Revocations likewise
- * arrive through the Verifiers.revocationsFor port, not the request.
- * Deployments wire a DurableMonotonicClock and a real external anchor;
- * the demo defaults are process-local only.
+ * INSTRUMENT OWNERSHIP: the engine owns its clock, ledger, biometric
+ * verifier, and enrolled voice template. They are constructor-supplied
+ * (clock and ledger defaulting to the system monotonic clock and a fresh
+ * in-process ledger; the biometric port and template have no defaults —
+ * wiring them is explicit) and NEVER taken from the request — a request
+ * cannot substitute the engine's time source, audit sink, revocation feed,
+ * or enrolled voiceprint, which is what the per-request GateContext
+ * ledger/clock allowed. Revocations likewise arrive through the
+ * Verifiers.revocationsFor port, not the request. Deployments wire a
+ * DurableMonotonicClock and a real external anchor; the demo defaults are
+ * process-local only.
  */
 class NineGates(
     private val rails: Rails,
     private val verifiers: Verifiers,
+    private val biometricVerifier: BiometricVerifier,
+    private val enrolledVoice: VoiceTemplate,
     val clock: MonotonicClock = SystemMonotonicClock(),
     val ledger: MerkleAuditLog = MerkleAuditLog(),
 ) {
@@ -215,14 +223,16 @@ class NineGates(
     }
 
     // GATE 1: IDENTITY & INTENT ORIGIN
+    //
+    // Identity proper anchors at Gate 7 (theta_voice): the voice that
+    // spoke the assent ceremony, verified against the deployment-enrolled
+    // template. Gate 1 keeps the origin signature; the old
+    // caller-supplied DoubleArray template comparison was a stub
+    // (consistency-checked, never truth-verified) and is removed.
     private fun gate1(ctx: GateContext): String? {
         val sigOk = checked { verifiers.verifySignature(ctx.keys.message, ctx.keys.signature) }
             ?: return "theta_sig: signature verifier threw (fail-closed)"
         if (!sigOk) return "theta_sig: signature verification failed"
-        val d = euclidean(ctx.keys.biometricTemplate, ctx.keys.enrolledTemplate)
-            ?: return "theta_bio: template dimension mismatch (fail-closed)"
-        if (!d.isFinite()) return "theta_bio: non-finite biometric distance (fail-closed)"
-        if (d > rails.epsilonBio) return "theta_bio: biometric distance $d > ${rails.epsilonBio}"
         return null
     }
 
@@ -322,6 +332,18 @@ class NineGates(
         val assentOk = checked { verifiers.verifyAssent(ctx.rendering, ctx.assentedAtMs, ctx.actionId, assent.signature) }
             ?: return "theta_assent: assent verifier threw (fail-closed)"
         if (!assentOk) return "theta_assent: assent signature invalid"
+        // theta_voice: the biometric anchor of assent. The voice that spoke
+        // the assent ceremony must be the enrolled voice, live: the adapter
+        // checks speaker similarity against the deployment-enrolled template
+        // AND that the spoken content matches the issued challenge. A
+        // throwing adapter fails closed like every other port; a REJECT or
+        // a non-LIVE liveness halts — never default-allow.
+        val voice = checked { biometricVerifier.verify(ctx.assentAudio, enrolledVoice) }
+            ?: return "theta_voice: biometric verifier threw (fail-closed)"
+        if (voice.decision != VerificationResult.Decision.ACCEPT)
+            return "theta_voice: voice verification rejected (score=${voice.score})"
+        if (voice.liveness != VerificationResult.Liveness.LIVE)
+            return "theta_voice: liveness not established (${voice.liveness})"
         // theta_assent_idle: an outstanding assent dies only when BOTH hold:
         //   (a) the assent itself is older than maxAssentIdleMs, AND
         //   (b) the audit ledger has been silent longer than maxAssentIdleMs.
@@ -445,13 +467,6 @@ class NineGates(
         is Condition.FieldEquals -> setOf(c.recordId)
         is Condition.And -> c.parts.flatMap(::conditionRecords).toSet()
         is Condition.Not -> conditionRecords(c.inner)
-    }
-
-    private fun euclidean(u: DoubleArray, v: DoubleArray): Double? {
-        if (u.size != v.size || u.isEmpty()) return null
-        var sum = 0.0
-        for (i in u.indices) { val d = u[i] - v[i]; sum += d * d }
-        return sqrt(sum)
     }
 
     private fun cosineDistance(u: DoubleArray, v: DoubleArray): Double? {
