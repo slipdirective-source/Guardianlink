@@ -1,6 +1,10 @@
 package guardianlink.gates
 
 import guardianlink.audit.MerkleAuditLog
+import guardianlink.voice.AudioSample
+import guardianlink.voice.GmmUbmVoiceVerifier
+import guardianlink.voice.TestVoice
+import guardianlink.voice.VoiceTemplate
 import org.junit.jupiter.api.Test
 import kotlin.random.Random
 import kotlin.test.assertEquals
@@ -132,7 +136,6 @@ class NineGatesAdversarialTest {
         signal = Signal("req".toByteArray(), snr = 20.0, wellFormed = true),
         keys = KeyMaterial(
             "req".toByteArray(), "sig".toByteArray(),
-            doubleArrayOf(0.0, 0.0), doubleArrayOf(0.0, 0.0),
         ),
         proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = tau),
         contextEntropyBits = 2.0,
@@ -143,17 +146,33 @@ class NineGatesAdversarialTest {
         rendering = render(action),
         assent = Assent("s_a".toByteArray()),
         assentedAtMs = assentedAtMs,
+        assentAudio = TestVoice.acceptingSample(voiceAnchor.first),
         intentVector = doubleArrayOf(1.0, 0.0),
         currentVector = doubleArrayOf(1.0, 0.0),
     )
 
+    /**
+     * Voice anchor for this test instance (JUnit constructs a fresh
+     * instance per test): the engine's biometric verifier and the
+     * deployment-enrolled template. passing() issues challenges on this
+     * same verifier, so ceremony audio matches the engine's challenge.
+     */
+    private val voiceAnchor: Pair<GmmUbmVoiceVerifier, VoiceTemplate> by lazy { TestVoice.anchor() }
+
+    /** Engine with caller-chosen verifiers, clock, and ledger — voice anchor shared per test. */
+    private fun gatesWith(
+        v: Verifiers,
+        clock: MonotonicClock = FakeClock(20_000L),
+        ledger: MerkleAuditLog = MerkleAuditLog(),
+    ): NineGates = NineGates(rails, v, voiceAnchor.first, voiceAnchor.second, clock = clock, ledger = ledger)
+
     /** Fresh engine with isolated instruments; tau seeds the engine clock. */
     private fun engineFor(v: Verifiers, tau: Long = 20_000L): NineGates =
-        NineGates(rails, v, clock = FakeClock(tau), ledger = MerkleAuditLog())
+        gatesWith(v, clock = FakeClock(tau))
 
     /** Fresh engine with a caller-chosen clock (hostile-clock tests). */
     private fun engineForClock(v: Verifiers, clock: MonotonicClock): NineGates =
-        NineGates(rails, v, clock = clock, ledger = MerkleAuditLog())
+        gatesWith(v, clock = clock)
 
     private fun assertHalted(o: GateOutcome): GateOutcome.Halted {
         assertTrue(o is GateOutcome.Halted, "expected Halted but was $o")
@@ -560,11 +579,10 @@ class NineGatesAdversarialTest {
         val cases = listOf(
             "snr" to base.copy(signal = Signal("r".toByteArray(), nan, true)),
             "entropy" to base.copy(contextEntropyBits = nan),
-            "biometric" to base.copy(
-                keys = base.keys.copy(
-                    biometricTemplate = doubleArrayOf(nan, nan),
-                    enrolledTemplate = doubleArrayOf(0.0, 0.0)
-                )
+            // Non-finite audio samples are hostile: the voice adapter
+            // rejects them at Gate 7, never scores them.
+            "assentAudio" to base.copy(
+                assentAudio = AudioSample(doubleArrayOf(nan, nan, nan), 16000)
             ),
             "intentVector" to base.copy(intentVector = doubleArrayOf(nan, nan)),
             "currentVector" to base.copy(currentVector = doubleArrayOf(nan, nan)),
@@ -585,12 +603,8 @@ class NineGatesAdversarialTest {
             val cases = listOf(
                 base.copy(signal = Signal("r".toByteArray(), inf, true)),
                 base.copy(contextEntropyBits = inf),
-                base.copy(
-                    keys = base.keys.copy(
-                        biometricTemplate = doubleArrayOf(inf, inf),
-                        enrolledTemplate = doubleArrayOf(0.0, 0.0)
-                    )
-                ),
+                // Infinite audio samples halt at Gate 7 (voice reject).
+                base.copy(assentAudio = AudioSample(doubleArrayOf(inf, 1.0, -1.0), 16000)),
             )
             for (ctx in cases) {
                 val out = engineFor(FuzzVerifiers()).evaluate(ctx)
@@ -625,7 +639,7 @@ class NineGatesAdversarialTest {
         run {
             val v = FuzzVerifiers(evilApply = { _, _ -> throw AssertionError("hostile Error") })
             val ledger = MerkleAuditLog()
-            val h = assertHalted(NineGates(rails, v, clock = FakeClock(20_000L), ledger = ledger).evaluate(passing(action)))
+            val h = assertHalted(gatesWith(v, clock = FakeClock(20_000L), ledger = ledger).evaluate(passing(action)))
             assertTrue(h.reason.contains("threw"), "expected throw-halt, got: ${h.reason}")
             assertEquals(1, ledger.size, "Error-throwing transition must leave a halt ledger record")
         }
@@ -637,7 +651,7 @@ class NineGatesAdversarialTest {
                     throw StackOverflowError("hostile recursion")
             }
             val ledger = MerkleAuditLog()
-            val h = assertHalted(NineGates(rails, v, clock = FakeClock(20_000L), ledger = ledger).evaluate(passing(action)))
+            val h = assertHalted(gatesWith(v, clock = FakeClock(20_000L), ledger = ledger).evaluate(passing(action)))
             assertEquals(1, h.atGate, "expected halt at gate 1, got $h")
             assertEquals(1, ledger.size, "Error-throwing verifier must leave a halt ledger record")
         }
@@ -981,10 +995,9 @@ class NineGatesAdversarialTest {
     @Test
     fun emptyVectorsHaltFailClosed() {
         val base = passing(Action.Read("profile", listOf("name")))
-        val e1 = base.copy(
-            keys = base.keys.copy(biometricTemplate = doubleArrayOf(), enrolledTemplate = doubleArrayOf())
-        )
-        assertEquals(1, assertHalted(engineFor(FuzzVerifiers()).evaluate(e1)).atGate)
+        // Empty ceremony audio: no voice evidence -> halt at Gate 7, never pass.
+        val e1 = base.copy(assentAudio = AudioSample(doubleArrayOf(), 16000))
+        assertEquals(7, assertHalted(engineFor(FuzzVerifiers()).evaluate(e1)).atGate)
         val e2 = base.copy(intentVector = doubleArrayOf(), currentVector = doubleArrayOf())
         assertEquals(5, assertHalted(engineFor(FuzzVerifiers()).evaluate(e2)).atGate)
     }
@@ -1005,7 +1018,7 @@ class NineGatesAdversarialTest {
     @Test
     fun assentIdleOldAssentSilentLedgerHalts() {
         val tau = 200_000_000L
-        val gates = NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L))
+        val gates = gatesWith(FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L))
         val ctx = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = 0L)
         val h = assertHalted(gates.evaluate(ctx))
         assertEquals(7, h.atGate)
@@ -1026,7 +1039,7 @@ class NineGatesAdversarialTest {
     fun assentIdleOldAssentActiveLedgerPasses() {
         val tau = 200_000_000L
         // Old assent, but the ledger was active 1ms ago: (b) fails → pass.
-        val gates = NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(tau - 1))
+        val gates = gatesWith(FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(tau - 1))
         val ctx = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = 0L)
         assertIntegrated(gates.evaluate(ctx))
     }
@@ -1036,7 +1049,7 @@ class NineGatesAdversarialTest {
         val tau = 200_000_000L
         // Assent 10s ago: fresh ((a) fails), though the ledger is dark.
         // READ cooling needs 5s elapsed — 10s clears it.
-        val gates = NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L))
+        val gates = gatesWith(FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L))
         val ctx = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = tau - 10_000L)
         assertIntegrated(gates.evaluate(ctx))
     }
@@ -1057,12 +1070,12 @@ class NineGatesAdversarialTest {
         // Just under the rail: passes.
         val under = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = tau - (idle - 1))
         assertIntegrated(
-            NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L)).evaluate(under))
+            gatesWith(FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L)).evaluate(under))
         // Just over on both conditions: halts. Fresh ledger: the passing
         // run above sealed into its engine's ledger, so use a new one.
         val over = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = tau - (idle + 1))
         val h = assertHalted(
-            NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L)).evaluate(over))
+            gatesWith(FuzzVerifiers(), clock = FakeClock(tau), ledger = ledgerWithAppendsAt(0L)).evaluate(over))
         assertEquals(7, h.atGate)
         assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
     }
@@ -1135,7 +1148,7 @@ class NineGatesAdversarialTest {
         val l = MerkleAuditLog()
         l.append("seed".toByteArray(), java.time.Instant.ofEpochMilli(Long.MIN_VALUE))
         val ctx = passing(Action.Read("profile", listOf("name")), tau = tau, assentedAtMs = 0L)
-        val h = assertHalted(NineGates(rails, FuzzVerifiers(), clock = FakeClock(tau), ledger = l).evaluate(ctx))
+        val h = assertHalted(gatesWith(FuzzVerifiers(), clock = FakeClock(tau), ledger = l).evaluate(ctx))
         assertEquals(7, h.atGate)
         assertTrue(h.reason.contains("theta_assent_idle"), h.reason)
     }
