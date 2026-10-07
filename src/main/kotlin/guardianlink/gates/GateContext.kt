@@ -1,24 +1,28 @@
 package guardianlink.gates
 
+import guardianlink.voice.AudioSample
+
 /**
  * sigma — the global system state vector (Codex v2.2, §II).
  *
  * sigma = ( eta, kappa, pi, S_entropy, c, a, x, M, r, s_a, tau )
  *
  * TRUST BOUNDARY: every evidence field in this context (signal payload/SNR,
- * biometric templates, proof bytes, entropy bits, parse-tree count, intent
+ * assent audio PCM, proof bytes, entropy bits, parse-tree count, intent
  * vectors) is CALLER-SUPPLIED. The gates check these values
  * for internal consistency, bounds, and finiteness — they do not and cannot
  * verify their truth. A caller that supplies self-consistent false evidence
  * passes the consistency checks; detecting that requires real adapters
- * (attested sensors, signature verification, ZK proof systems) behind the
- * Verifiers ports. See README "Trust boundaries & adapter requirements".
+ * (attested sensors, signature verification, ZK proof systems, the voice
+ * biometric port) behind the Verifiers ports. See README "Trust boundaries
+ * & adapter requirements".
  *
  * INSTRUMENT OWNERSHIP: the request carries evidence only. The engine owns
- * its clock and ledger (constructor-supplied to NineGates, never taken from
- * the request), and revocations arrive through the Verifiers.revocationsFor
- * port. A request cannot substitute the engine's time source, audit sink,
- * or revocation feed.
+ * its clock, ledger, biometric verifier, and enrolled voice template
+ * (constructor-supplied to NineGates, never taken from the request), and
+ * revocations arrive through the Verifiers.revocationsFor port. A request
+ * cannot substitute the engine's time source, audit sink, revocation feed,
+ * or enrolled voiceprint.
  */
 data class GateContext(
     /** eta: raw signal payload + measured SNR + well-formedness. */
@@ -42,6 +46,14 @@ data class GateContext(
     /** s_a: person's assent signature over r. Null until given. */
     val assent: Assent?,
     /**
+     * PCM captured during the assent ceremony — the voice that spoke the
+     * challenge response. Caller-supplied evidence; the engine verifies it
+     * against the deployment-enrolled voice template through the
+     * BiometricVerifier port at Gate 7 (theta_voice). Capture, resampling,
+     * and the challenge ceremony are the deployment's job.
+     */
+    val assentAudio: AudioSample,
+    /**
      * Claimed tau-domain timestamp (ms) when r was shown for assent.
      * Caller-supplied; the assent signature MUST bind (rendering,
      * assentedAtMs, actionId) — see Verifiers.verifyAssent. The engine
@@ -64,16 +76,17 @@ data class Signal(
     val wellFormed: Boolean,
 )
 
-/** kappa — key material & biometric commitments (Gate 1). */
+/**
+ * kappa — key material (Gate 1). Identity anchors biometrically at Gate 7
+ * (theta_voice) against a deployment-enrolled voice template; the old
+ * caller-supplied DoubleArray template comparison was a stub and is
+ * removed — Gate 1 keeps the origin signature only.
+ */
 data class KeyMaterial(
     /** m: the message whose origin is being proven. Bound to the request. */
     val message: ByteArray,
     /** s: signature over m, verified against K_p. */
     val signature: ByteArray,
-    /** h_bio: presented biometric template. */
-    val biometricTemplate: DoubleArray,
-    /** C_root: enrolled biometric commitment. */
-    val enrolledTemplate: DoubleArray,
 )
 
 /** pi — zero-knowledge proofs & attestations (Gate 3). */
