@@ -28,6 +28,12 @@ import guardianlink.gates.SubstrateState
 import guardianlink.gates.Verifiers
 import guardianlink.gates.render
 import guardianlink.trajectory.TrajectoryEstimator
+import guardianlink.voice.AudioSample
+import guardianlink.voice.Gmm
+import guardianlink.voice.GmmUbmVoiceVerifier
+import guardianlink.voice.Mfcc
+import guardianlink.voice.SyntheticVoice
+import guardianlink.voice.VoiceTemplate
 
 fun main() {
     println("=" * 72)
@@ -47,7 +53,16 @@ fun main() {
     // The gate engine: permissive verifiers, engine-owned clock and ledger.
     // Production deployments MUST supply real cryptographic verifiers here.
     val verifiers = demoVerifiers()
-    val gates = NineGates(Rails(), verifiers, clock = FakeClock(t = 60_000L), ledger = MerkleAuditLog())
+    // Voice biometric anchor (Gate 7, theta_voice): the UBM is trained on a
+    // background population of synthetic voices; the enrolled template is
+    // the demo "person". DEMO ONLY — synthetic fixture audio, not a
+    // biometric claim. A real deployment enrolls the person on microphone
+    // audio and stores the template in its own enrollment store.
+    val (voiceVerifier, enrolledVoice) = demoVoiceAnchor()
+    val gates = NineGates(
+        Rails(), verifiers, voiceVerifier, enrolledVoice,
+        clock = FakeClock(t = 60_000L), ledger = MerkleAuditLog(),
+    )
     // One real external anchor path: sealed roots are appended to a
     // tamper-evident anchor file (host-filesystem grade — see ExternalAnchor).
     val anchorDir = java.nio.file.Files.createTempDirectory("guardianlink-anchors")
@@ -159,7 +174,7 @@ fun main() {
     // execution goes through ConciergeInterface.execute, which forces the
     // action through the gates and anchors each seal externally.
     println("=== NineGates Demo (composed) ===")
-    runComposedDemo(concierge, gates, setRevocations = { verifiers.revocationFeed = it })
+    runComposedDemo(concierge, gates, voiceVerifier, setRevocations = { verifiers.revocationFeed = it })
     println("Anchor chain verify: ${if (anchor.verifyChain() < 0) "INTACT" else "BROKEN"}")
     println()
 
@@ -199,6 +214,47 @@ private fun demoVerifiers() = object : Verifiers {
 }
 
 /**
+ * Demo voice anchor: UBM over a synthetic background population, speaker
+ * template enrolled for the demo "person" with phrase references for every
+ * challenge phrase. Returns the verifier (challenge issuer) and the
+ * deployment-owned enrolled template.
+ */
+private fun demoVoiceAnchor(): Pair<GmmUbmVoiceVerifier, VoiceTemplate> {
+    val person = SyntheticVoice.Speaker(f0Hz = 120.0, formantScale = 1.0, seed = 7L)
+    val backgroundSpeakers = listOf(
+        SyntheticVoice.Speaker(f0Hz = 165.0, formantScale = 1.18, seed = 99L),
+        SyntheticVoice.Speaker(f0Hz = 95.0, formantScale = 0.88, seed = 1234L),
+        SyntheticVoice.Speaker(f0Hz = 140.0, formantScale = 1.07, seed = 555L),
+    )
+    val phraseIds = GmmUbmVoiceVerifier.phraseDigits.keys.toList()
+    val backgroundFrames = backgroundSpeakers.flatMap { sp ->
+        phraseIds.flatMap { pid -> Mfcc.extract(SyntheticVoice.speak(sp, pid).pcm) }
+    }
+    val ubm = Gmm.trainEm(backgroundFrames, components = 8)
+    val verifier = GmmUbmVoiceVerifier(ubm)
+    val speakerSamples = phraseIds.map { pid -> SyntheticVoice.speak(person, pid) }
+    val template = verifier.enrollPhrases(
+        verifier.enroll(speakerSamples),
+        phraseIds.associateWith { pid -> SyntheticVoice.speak(person, pid) },
+    )
+    return verifier to template
+}
+
+/** The demo "person" — must match the enrolled speaker in demoVoiceAnchor. */
+private val demoSpeaker = SyntheticVoice.Speaker(f0Hz = 120.0, formantScale = 1.0, seed = 7L)
+
+/**
+ * The assent ceremony, demo edition: issue a challenge, speak the
+ * challenged phrase, capture PCM. A real deployment plays the prompt to
+ * the person and records microphone audio here.
+ */
+private fun demoAssentAudio(verifier: GmmUbmVoiceVerifier): AudioSample {
+    val challenge = verifier.issueChallenge()
+    println("  [voice] challenge: \"${challenge.prompt}\"")
+    return SyntheticVoice.speak(demoSpeaker, challenge.phraseId)
+}
+
+/**
  * Composed Nine Gates demo: all-pass integration (anchored), a tampered
  * rendering (REJECTED at Gate 7), and a signed revocation between assent
  * and seal (REJECTED at Gate 8). Every execution goes through
@@ -207,6 +263,7 @@ private fun demoVerifiers() = object : Verifiers {
 private fun runComposedDemo(
     concierge: ConciergeInterface,
     gates: NineGates,
+    voiceVerifier: GmmUbmVoiceVerifier,
     setRevocations: (List<Revocation>) -> Unit,
 ) {
     val clock = gates.clock
@@ -217,16 +274,14 @@ private fun runComposedDemo(
     ) = ConciergeInterface.ActionEvidence(
         actionId = "demo-1",
         signal = Signal("req".toByteArray(), snr = 20.0, wellFormed = true),
-        keys = KeyMaterial(
-            "req".toByteArray(), "sig".toByteArray(),
-            doubleArrayOf(0.0, 0.0), doubleArrayOf(0.0, 0.0),
-        ),
+        keys = KeyMaterial("req".toByteArray(), "sig".toByteArray()),
         proofs = Proofs("zk".toByteArray(), "pub".toByteArray(), issuedAtMs = clock.nowMs()),
         contextEntropyBits = 2.0,
         contextParseTrees = 1,
         rendering = rendering,
         assent = Assent("s_a".toByteArray()),
         assentedAtMs = 0L, // 60s elapsed; WRITE window is 10s
+        assentAudio = demoAssentAudio(voiceVerifier),
         intentVector = doubleArrayOf(1.0, 0.0),
         currentVector = doubleArrayOf(1.0, 0.0),
     )
