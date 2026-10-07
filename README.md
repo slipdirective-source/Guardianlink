@@ -1,9 +1,76 @@
-# GuardianLink — v1 Kotlin Scaffold
+# GuardianLink — fail-closed execution governor
 
-Sovereign personal data platform: zero-authority concierge interface, fail-closed
-tiered PolicyEngine, Merkle tamper-evident audit log, Shamir's Secret Sharing MFA,
-MAD-based trajectory estimation, and a friction/cooling-off pre-commitment rail
-system.
+GuardianLink is infrastructure, not a product: a deterministic, fail-closed
+governor that sits between an agent and the substrate it mutates. Every action
+is forced through nine gates — canonical rendering, impact-scaled cooling,
+cryptographically bound human assent, voice-biometric liveness, signed
+revocation re-scan — before the transition is sealed into a Merkle ledger and
+published through an external anchor. The engine checks the consistency of
+everything it is told and trusts nothing it is given: clock, ledger, and
+revocation feed are engine-owned constructor instruments, never request
+parameters.
+
+Use it as a sidecar: `guardianlink-sidecar/` exposes the full ceremony over
+REST (`POST /v1/actions/submit` → `GET /v1/actions/{id}/challenge` →
+`POST /v1/actions/{id}/assent`), with Python and TypeScript clients. See
+"Adopter quickstart" below.
+
+## Adopter quickstart
+
+The fastest path is the sidecar — no Kotlin required:
+
+```python
+from guardianlink_client import GuardianLinkClient
+
+client = GuardianLinkClient("http://localhost:8080")
+action = {"type": "Write", "path": "vault/api_key", "value": "..."}
+
+sub = client.submit(action)                     # → actionId + canonical rendering
+chal = client.get_challenge(sub.action_id)      # → single-use voice challenge
+print("Say:", chal.phrase, "| you see:", sub.rendering)
+
+audio = record_16khz_mono()                     # your mic capture
+result = client.assent(sub.action_id, sign(sub.rendering), audio)
+# → executed {sealRoot, anchorReceipt} or rejected {atGate, reason}
+```
+
+The ceremony is: submit, read the rendering, speak the challenge phrase,
+assent. The signature binds `(rendering, assentedAtMs, actionId)` — replay,
+refresh, and backdating are defeated by the binding, not by policy. Every
+execution — including yours — goes through `ConciergeInterface.execute`;
+there is no other path, over REST or otherwise.
+
+TypeScript: `guardianlink-sidecar/guardianlink-ts/` (`client.ts`, quickstart in
+`demoVoice.ts`). Full API: `guardianlink-sidecar/README.md`.
+
+## Declared residuals
+
+Stated boundaries, not hidden ones. Each is the deployment's job:
+
+- **Ambient authority.** The gates are airtight around the *substrate*, not the
+  *agent*. A governed agent running with ambient authority (host process, raw
+  sockets) can act without touching the gates. The honest claim is "the
+  substrate cannot change without assent" — never "the agent cannot act
+  without assent." Deployments must sandbox the agent or bound the claim.
+  (Android's UID sandbox is the natural answer — see
+  `docs/android-integration.md`.)
+- **Display ceremony.** The engine proves the signed bytes equal `Render(a)`
+  of the executed action; it cannot prove the human's eyes saw those bytes or
+  spoke uncoerced. Attested display and signing are deployment scope.
+- **Voice liveness.** Challenge-response only: a recording of the *current*
+  challenge verifies; real-time voice clones are not detected. Thresholds are
+  calibrated on synthetic audio — re-calibrate on real voice before
+  production. See `voice/README.md` for the full honest-limits list.
+- **Anchor grade.** The bundled `AppendOnlyFileAnchor` is host-filesystem
+  grade: append-only, hash-chained, tamper-evident — not disk-attacker-proof.
+  A Rekor/TSA/write-once adapter behind the `ExternalAnchor` port is the next
+  grade up.
+- **Verifiers lie; they don't just throw.** `checked {}` fail-closes on
+  *throwing* adapters, not *lying* ones. Signature, ZK, and attestation
+  adapters are the system's largest trust assumption — they must be real.
+- **No cross-action cumulative reasoning.** Fifty individually-innocent writes
+  can compose a deletion; each passes all gates. Per-execution bound assent
+  makes every step human-visible, which mitigates but does not close this.
 
 ## Build
 
@@ -18,7 +85,7 @@ The algorithmic core of every bug-prone module (Merkle checkpointing, MAD shift
 detection, CAS concurrency, Shamir reconstruction, PolicyEngine fail-closed
 invariant) was verified via adversarial Python-ported test batches before this
 Kotlin code was written, confirming the logic is sound. The Kotlin itself is
-compiler-verified (kotlinc 1.9.22, JDK 17) with a 165-test suite run
+compiler-verified (kotlinc 1.9.22, JDK 17) with a 179-test suite run
 locally plus CI (`.github/workflows/ci.yml`) and CodeQL
 (`.github/workflows/codeql.yml`) on every push.
 
@@ -36,7 +103,7 @@ claims, not truth**:
 
 | Claim source | What the engine checks | What it does NOT check (adapter required) |
 |---|---|---|
-| `GateContext` evidence (biometric vectors, SNR, entropy, parse trees, proof bytes, claimed assent time) | Internal consistency, bounds, finiteness | That the values are true — a caller can supply self-consistent lies; the assent signature must bind (rendering, assentedAtMs, actionId) per the `verifyAssent` contract |
+| `GateContext` evidence (assent audio PCM, SNR, entropy, parse trees, proof bytes, claimed assent time) | Internal consistency, bounds, finiteness | That the values are true — a caller can supply self-consistent lies; the assent signature must bind (rendering, assentedAtMs, actionId) per the `verifyAssent` contract, and the voice adapter verifies ceremony audio against the deployment-enrolled template (it cannot verify the microphone wasn't coerced or the display wasn't lying — see `voice/README.md` honest limits) |
 | `Verifiers` ports (signatures, ZK, assent, revocation, policy) | Totality (throw → halt), boolean outcomes | Cryptographic validity itself — real signature/ZK/attestation adapters required |
 | Shamir share categories | Share math (field ranges, no dup x, threshold, mandatory HW label) | That a share labeled `HARDWARE_BIOMETRIC` really came from hardware — attestation binding + VSS commitments required |
 | Trajectory samples | Finiteness, magnitude bounds, self-consistency, windowed anomalies | That samples are authentic — signed/attested sensor streams required |
@@ -73,6 +140,7 @@ Executable model of the Global Master Codex v2.2 Nine Gates FSM
   substrate is carried across calls, and each seal root is published through
   the `ExternalAnchor` port (`AppendOnlyFileAnchor` bundled: append-only,
   hash-chained anchor file). A throwing anchor fails loud, never silent.
-- 165 tests across the suite (`NineGatesTest` / `NineGatesAdversarialTest` hold 76 between them; `GovernedExecutionTest` covers the composed path and the anchor) cover every gate's
+- 179 tests across the suite (engine gates, adversarial, composed path, anchor,
+  voice biometrics) cover every gate's
   halt path, cooling scaling, revocation, ledger appends, render injectivity,
   and single-evaluation. Demo in `Main.kt`.
