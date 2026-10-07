@@ -1,0 +1,1 @@
+{"description":"TypeScript client for the GuardianLink sidecar (REST+JSON adapter over the governed engine)","devDependencies":{"@types/node":"^26.6.4","typescript":"^5.4.5"},"main":"dist/client.js","name":"@guardianlink/sidecar-client","scripts":{"build":"tsc","quickstart":"npm run build && node dist/quickstart.js"},"types":"dist/client.d.ts","version":"0.1.0"}
