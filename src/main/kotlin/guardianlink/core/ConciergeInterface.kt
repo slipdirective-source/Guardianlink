@@ -13,6 +13,7 @@ import guardianlink.gates.Signal
 import guardianlink.gates.SubstrateState
 import guardianlink.integrity.DeviceIntegrityTier
 import guardianlink.policy.PolicyEngine
+import guardianlink.voice.AudioSample
 
 /**
  * The composed interface: the principal's doorway into the system.
@@ -62,6 +63,12 @@ class ConciergeInterface(
         val rendering: String,
         val assent: Assent,
         val assentedAtMs: Long,
+        /**
+         * PCM captured during the assent ceremony. Evidence only — the
+         * engine verifies it against its own enrolled voice template at
+         * Gate 7 (theta_voice).
+         */
+        val assentAudio: AudioSample,
         val intentVector: DoubleArray,
         val currentVector: DoubleArray,
     )
@@ -105,6 +112,7 @@ class ConciergeInterface(
                 rendering = evidence.rendering,
                 assent = evidence.assent,
                 assentedAtMs = evidence.assentedAtMs,
+                assentAudio = evidence.assentAudio,
                 intentVector = evidence.intentVector,
                 currentVector = evidence.currentVector,
             )
