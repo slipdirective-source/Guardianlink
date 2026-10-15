@@ -1,0 +1,47 @@
+name: APK
+
+# Builds the Android execution layer and attaches an installable debug APK.
+# This is the "download and run it" link: every push to main that touches
+# the app, the engine, or the build produces a fresh artifact.
+#
+# The 3-5 minute loop depends on the Gradle cache below (setup-gradle);
+# without it, cold dependency downloads dominate the build time.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'android-app/**'
+      - 'src/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'settings.gradle.kts'
+      - 'build.gradle.kts'
+      - '.github/workflows/apk.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'android-app/**'
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Make wrapper executable
+        run: chmod +x gradlew
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Build debug APK
+        run: ./gradlew :android-app:assembleDebug --stacktrace
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: guardianlink-debug-apk
+          path: android-app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
