@@ -1,14 +1,26 @@
 # GuardianLink — fail-closed execution governor
 
 GuardianLink is infrastructure, not a product: a deterministic, fail-closed
-governor that sits between an agent and the substrate it mutates. Every action
-is forced through nine gates — canonical rendering, impact-scaled cooling,
-cryptographically bound human assent, voice-biometric liveness, signed
-revocation re-scan — before the transition is sealed into a Merkle ledger and
-published through an external anchor. The engine checks the consistency of
-everything it is told and trusts nothing it is given: clock, ledger, and
-revocation feed are engine-owned constructor instruments, never request
-parameters.
+governor that sits between an agent and the substrate it mutates. Narrowly:
+it is a **transaction governor for consequential machine actions** — human
+authorization is cryptographically bound to a canonical representation of
+exactly what will execute, followed by fail-closed evaluation and
+independently checkable evidence of the resulting transition. That binding
+(the signature covers the rendering, the assent time, and the action ID —
+never the payload alone) is the differentiator; "we govern AI agents" is a
+category, not a moat.
+
+Every action is forced through nine gates — canonical rendering,
+impact-scaled cooling, cryptographically bound human assent,
+voice-biometric liveness, signed revocation re-scan — before the transition
+is sealed into a Merkle ledger and published through an external anchor.
+The engine checks the consistency of everything it is told and trusts
+nothing it is given: clock, ledger, and revocation feed are engine-owned
+constructor instruments, never request parameters. Production-grade
+adapters (Ed25519 signatures, authority-signed revocation feed, Feldman
+VSS share commitments, mirrored anchoring) ship in `crypto/`,
+`adapters/`, `mfa/`, and `audit/` — see `docs/production-deployment.md`
+for the deployment checklist.
 
 Use it as a sidecar: `guardianlink-sidecar/` exposes the full ceremony over
 REST (`POST /v1/actions/submit` → `GET /v1/actions/{id}/challenge` →
@@ -61,13 +73,20 @@ Stated boundaries, not hidden ones. Each is the deployment's job:
   challenge verifies; real-time voice clones are not detected. Thresholds are
   calibrated on synthetic audio — re-calibrate on real voice before
   production. See `voice/README.md` for the full honest-limits list.
-- **Anchor grade.** The bundled `AppendOnlyFileAnchor` is host-filesystem
-  grade: append-only, hash-chained, tamper-evident — not disk-attacker-proof.
-  A Rekor/TSA/write-once adapter behind the `ExternalAnchor` port is the next
-  grade up.
+- **Anchor grade.** The bundled anchors are host-filesystem grade:
+  `AppendOnlyFileAnchor` (fsync'd, append-only, hash-chained,
+  tamper-evident) and `MirroredAnchor` (N-way fan-out with quorum health
+  check — an attacker must rewrite every mirror consistently). Neither is
+  disk-attacker-proof. A Rekor/TSA/write-once adapter behind the
+  `ExternalAnchor` port is the next grade up.
 - **Verifiers lie; they don't just throw.** `checked {}` fail-closes on
-  *throwing* adapters, not *lying* ones. Signature, ZK, and attestation
-  adapters are the system's largest trust assumption — they must be real.
+  *throwing* adapters, not *lying* ones. Real adapters now ship
+  (`crypto/Ed25519.kt`, `crypto/AssentCodec.kt`,
+  `adapters/SignedRevocationListFeed.kt`, `mfa/FeldmanVss.kt`) and
+  `ProductionVerifiers` defaults to deny on every port it cannot verify —
+  but the deployment must actually wire them. ZK verification and
+  hardware attestation remain deployment scope: until real adapters
+  exist there, those gates halt (fail-closed), they do not pass.
 - **No cross-action cumulative reasoning.** Fifty individually-innocent writes
   can compose a deletion; each passes all gates. Per-execution bound assent
   makes every step human-visible, which mitigates but does not close this.
@@ -104,8 +123,8 @@ claims, not truth**:
 | Claim source | What the engine checks | What it does NOT check (adapter required) |
 |---|---|---|
 | `GateContext` evidence (assent audio PCM, SNR, entropy, parse trees, proof bytes, claimed assent time) | Internal consistency, bounds, finiteness | That the values are true — a caller can supply self-consistent lies; the assent signature must bind (rendering, assentedAtMs, actionId) per the `verifyAssent` contract, and the voice adapter verifies ceremony audio against the deployment-enrolled template (it cannot verify the microphone wasn't coerced or the display wasn't lying — see `voice/README.md` honest limits) |
-| `Verifiers` ports (signatures, ZK, assent, revocation, policy) | Totality (throw → halt), boolean outcomes | Cryptographic validity itself — real signature/ZK/attestation adapters required |
-| Shamir share categories | Share math (field ranges, no dup x, threshold, mandatory HW label) | That a share labeled `HARDWARE_BIOMETRIC` really came from hardware — attestation binding + VSS commitments required |
+| `Verifiers` ports (signatures, ZK, assent, revocation, policy) | Totality (throw → halt), boolean outcomes | Cryptographic validity itself — real Ed25519 signature/assent/revocation adapters now ship (`crypto/`, `adapters/`); ZK and attestation adapters still required (their gates halt until supplied) |
+| Shamir share categories | Share math (field ranges, no dup x, threshold, mandatory HW label); with `FeldmanVss`, share consistency against commitments (use `ShamirMfa(Secp256k1.N)` + `FeldmanVss.deal`) | That a share labeled `HARDWARE_BIOMETRIC` really came from hardware — attestation binding still required; VSS now ships |
 | Trajectory samples | Finiteness, magnitude bounds, self-consistency, windowed anomalies | That samples are authentic — signed/attested sensor streams required |
 | Merkle ledger | Tamper-evidence within the process; engine records carry engine-attested timestamps from the engine-owned clock | Immutability — sealed roots are published through the `ExternalAnchor` port; the bundled `AppendOnlyFileAnchor` is host-filesystem grade (durable, tamper-evident, not disk-attacker-proof). Direct external appends (outside the engine) keep the caller-supplied timestamp caveat |
 | Assent idle-expiry (`theta_assent_idle`) | Assent age + ledger silence vs `maxAssentIdleMs` (24h) — an assent dies only when BOTH are exceeded | The silence check reads the engine-owned ledger, and engine appends are engine-attested, closing the forged-liveness vector for engine records — the external anchor remains the recourse for direct ledger writes |

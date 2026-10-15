@@ -25,11 +25,13 @@ import java.security.SecureRandom
  * TRUST BOUNDARY: share CATEGORY labels are self-asserted by whoever
  * supplies the shares — a software share can claim HARDWARE_BIOMETRIC.
  * Authenticating categories (hardware attestation binding a share's x to
- * a secure element) and verifiable secret sharing (Feldman/VSS
- * commitments, so malicious shares cannot steer reconstruction) REQUIRE
- * real cryptographic adapters. Until those exist, this module checks the
- * mathematical validity of the shares it is given, never the authenticity
- * of their provenance.
+ * a secure element) still REQUIRES a real attestation adapter. Malicious
+ * shares, however, are now detectable: [FeldmanVss] provides the VSS
+ * commitments, so reconstruction can exclude shares that fail
+ * verification. Use ShamirMfa(Secp256k1.N) together with FeldmanVss.deal
+ * when verifiability is required; this module alone still checks only
+ * the mathematical validity of the shares it is given, never the
+ * authenticity of their provenance.
  */
 class ShamirMfa(private val prime: BigInteger = DEFAULT_PRIME) {
 
@@ -57,6 +59,37 @@ class ShamirMfa(private val prime: BigInteger = DEFAULT_PRIME) {
             }
             Share(xi, yi, categories[x - 1])
         }
+    }
+
+    /**
+     * Like [split], but also returns the polynomial coefficients
+     * (a_0 = secret, a_1..a_{m-1} random). Needed by Feldman VSS to
+     * compute commitments C_j = a_j * G. Exposing coefficients is
+     * dealer-only: whoever holds them can reconstruct the secret
+     * alone — never publish them, only the commitments.
+     */
+    fun splitWithCoefficients(
+        secret: BigInteger,
+        m: Int,
+        n: Int,
+        categories: List<FactorCategory>,
+    ): Pair<List<Share>, List<BigInteger>> {
+        require(m in 2..n) { "threshold m must be in 2..n (m=1 is not secret sharing)" }
+        require(categories.size == n) { "must supply exactly n categories" }
+        require(secret >= BigInteger.ZERO && secret < prime) { "secret must be in [0, prime)" }
+        val coefficients = mutableListOf(secret)
+        repeat(m - 1) {
+            coefficients.add(BigInteger(prime.bitLength(), random).mod(prime))
+        }
+        val shares = (1..n).map { x ->
+            val xi = BigInteger.valueOf(x.toLong())
+            var yi = BigInteger.ZERO
+            for ((power, coeff) in coefficients.withIndex()) {
+                yi = yi.add(coeff.multiply(xi.pow(power))).mod(prime)
+            }
+            Share(xi, yi, categories[x - 1])
+        }
+        return shares to coefficients.toList()
     }
 
     /**

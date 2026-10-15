@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption.APPEND
 import java.nio.file.StandardOpenOption.CREATE
+import java.nio.file.StandardOpenOption.WRITE
 import java.security.MessageDigest
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -65,9 +66,26 @@ class AppendOnlyFileAnchor(directory: Path) : ExternalAnchor {
             val prevHash = if (Files.exists(file) && Files.size(file) > 0) sha256(lastLine()) else GENESIS
             val lineIndex = lineCount()
             val line = "$entryIndex|$root|$timestampMs|$prevHash"
-            Files.write(file, (line + "\n").toByteArray(Charsets.UTF_8), CREATE, APPEND)
+            // Durability: the anchor is not real until the OS has it.
+            // Files.write returns after page-cache; force(true) is fsync —
+            // without it a power loss can silently drop the tail of the
+            // anchor file, and the "durable" claim is fiction.
+            java.nio.channels.FileChannel.open(file, CREATE, WRITE, APPEND).use { ch ->
+                ch.write(java.nio.ByteBuffer.wrap((line + "\n").toByteArray(Charsets.UTF_8)))
+                ch.force(true)
+            }
             ExternalAnchor.Receipt(root, entryIndex, timestampMs, "$file#line=$lineIndex")
         }
+
+    /**
+     * Hash of the current tip line (GENESIS when empty). Used by
+     * [MirroredAnchor] to detect cross-mirror divergence: each mirror's
+     * own chain can be self-consistent while disagreeing with its
+     * siblings, and only a tip comparison catches that.
+     */
+    internal fun tipHash(): String = lock.withLock {
+        if (!Files.exists(file) || Files.size(file) == 0L) GENESIS else sha256(lastLine())
+    }
 
     /**
      * Verifies the anchor chain. Returns -1 when intact (or empty —
