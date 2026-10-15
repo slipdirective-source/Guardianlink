@@ -11,12 +11,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - name: Make wrapper executable
+        run: chmod +x gradlew
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v5
-        with:
-          gradle-version: 8.5
       - name: Build and test
-        run: gradle build
+        run: ./gradlew build
