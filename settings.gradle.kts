@@ -11,9 +11,11 @@ pluginManagement {
             if (requested.id.id == "com.android.application") {
                 useModule("com.android.tools.build:gradle:${requested.version}")
             }
-            if (requested.id.id == "org.jetbrains.kotlin.android") {
-                useModule("org.jetbrains.kotlin:kotlin-gradle-plugin:${requested.version}")
-            }
+            // NOTE: do NOT map org.jetbrains.kotlin.android here. The portal
+            // serves JetBrains markers fine, and mapping it collides with
+            // the kotlin-jvm plugin already on the classpath ("already on
+            // the classpath with an unknown version"). Only AGP needs the
+            // workaround.
         }
     }
     repositories {
