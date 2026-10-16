@@ -1,5 +1,8 @@
 plugins {
-    kotlin("jvm") version "1.9.22"
+    // 2.0.21: KGP 1.9.22's KotlinAndroidTarget decorates against AGP's
+    // removed BaseVariant API (NoClassDefFoundError with AGP 8.5.2).
+    // 2.0.x is the documented-compatible KGP for AGP 8.5.
+    kotlin("jvm") version "2.0.21"
     application
 }
 
