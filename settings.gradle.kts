@@ -5,9 +5,10 @@ pluginManagement {
             // AGP marker — it 303-redirects the marker POM to Maven
             // Central, which hosts zero com.android.application artifacts
             // (verified: all AGP versions 404). Map the marker straight to
-            // the real module on Google's Maven instead. Immune to portal
-            // flakiness; the kotlin-android marker gets the same treatment
-            // for consistency.
+            // the real module on Google's Maven instead. AGP-only: mapping
+            // kotlin-android here collides with the kotlin-jvm plugin
+            // already on the classpath, and JetBrains markers resolve fine
+            // via the portal.
             if (requested.id.id == "com.android.application") {
                 useModule("com.android.tools.build:gradle:${requested.version}")
             }
