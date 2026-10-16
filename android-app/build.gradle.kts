@@ -6,6 +6,13 @@ plugins {
     kotlin("android")
 }
 
+// Dependency repositories: google() carries the androidx / security-crypto
+// artifacts; the root project's mavenCentral() does not apply here.
+repositories {
+    google()
+    mavenCentral()
+}
+
 android {
     namespace = "guardianlink.android"
     compileSdk = 34
