@@ -1,3 +1,28 @@
+pluginManagement {
+    resolutionStrategy {
+        eachPlugin {
+            // 2026-10-15: the Gradle Plugin Portal does not resolve the
+            // AGP marker — it 303-redirects the marker POM to Maven
+            // Central, which hosts zero com.android.application artifacts
+            // (verified: all AGP versions 404). Map the marker straight to
+            // the real module on Google's Maven instead. Immune to portal
+            // flakiness; the kotlin-android marker gets the same treatment
+            // for consistency.
+            if (requested.id.id == "com.android.application") {
+                useModule("com.android.tools.build:gradle:${requested.version}")
+            }
+            if (requested.id.id == "org.jetbrains.kotlin.android") {
+                useModule("org.jetbrains.kotlin:kotlin-gradle-plugin:${requested.version}")
+            }
+        }
+    }
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
 rootProject.name = "guardianlink"
 
 // The REST+JSON sidecar: a thin HTTP adapter over the engine.
