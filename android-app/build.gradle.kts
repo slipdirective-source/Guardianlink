@@ -1,11 +1,8 @@
 plugins {
-    id("com.android.application") version "8.5.2"
-    // Versionless: the kotlin-gradle-plugin artifact (same 1.9.22) is
-    // already on the build classpath via the root project's kotlin-jvm
-    // plugin. Requesting a version here collides with it ("already on the
-    // classpath with an unknown version"). The AGP version above still
-    // carries one because it resolves through the pluginManagement
-    // resolutionStrategy mapping, not the shared classpath.
+    // Versions come from the root project's apply-false declarations —
+    // keep these versionless so KGP and AGP share one visible plugin
+    // classpath (see root build.gradle.kts).
+    id("com.android.application")
     kotlin("android")
 }
 
