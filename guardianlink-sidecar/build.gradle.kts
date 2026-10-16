@@ -1,5 +1,7 @@
 plugins {
-    kotlin("jvm") version "1.9.22"
+    // Versionless: inherits 2.0.21 from the root project's applied
+    // kotlin-jvm plugin (a versioned request here collides with it).
+    kotlin("jvm")
 }
 
 group = "guardianlink"
