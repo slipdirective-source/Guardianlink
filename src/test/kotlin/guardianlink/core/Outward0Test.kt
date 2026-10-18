@@ -379,7 +379,15 @@ class Outward0Test {
         val threads = (1..2).map {
             Thread {
                 try {
-                    val result = setup.issuer.checkAndConsumeMutation(mutCap, 60_000L)
+                    // checkAndConsumeMutation takes (cap, rendering, t_c)
+                    // The rendering must match what the capability was minted for.
+                    // For this test, we use the mutationHash as the rendering check.
+                    // Note: In practice, the rendering comes from the action.
+                    val result = setup.issuer.checkAndConsumeMutation(
+                        mutCap,
+                        rendering = sha256Hex("concurrent-test"),
+                        t_c = 60_000L
+                    )
                     synchronized(results) {
                         results.add(result is CheckResult.Ok)
                     }
