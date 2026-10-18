@@ -38,6 +38,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import org.junit.jupiter.api.Test
 
 /**
@@ -344,7 +346,14 @@ class CapabilityFalsificationTest {
     fun `revoked epoch kills every capability in it`() {
         val iss = epochIssuer()
         val cap1 = tunEpoch(iss)
-        val cap2 = tunEpoch(iss)
+        // C-4: second epoch with same predicate needs explicit overlap authorization.
+        // This test is about revocation semantics, not overlap prohibition.
+        val cap2 = iss.mintEpoch(
+            predicate = CapabilityPredicate("net/", setOf("tun-packet")),
+            maxMutations = 100L,
+            maxBytes = 1_000_000L,
+            allowOverlap = true,
+        )
         iss.revokeEpoch(cap1.epoch)
         assertEquals(cap1.epoch, cap2.epoch - 1)
         // cap2 is a different epoch: still live.
@@ -520,5 +529,105 @@ class CapabilityFalsificationTest {
             },
             "MutationCapability.notAfterMs is mutable"
         )
+    }
+
+    // C-4 characterization: epoch-local reset is intentional current behavior.
+    // A newly issued epoch receives a fresh local budget. This test pins the
+    // exact contract: maxMutations constrains an epoch, NOT a continuing
+    // authority lineage. If a future lineage mechanism changes this behavior,
+    // this test must be deliberately replaced, not silently altered.
+
+    @Test
+    fun `c4 new epoch receives fresh local budget (characterization)`() {
+        val iss = epochIssuer()
+        val predicate = CapabilityPredicate("net/", setOf("tun-packet"))
+
+        // First epoch: exhaust its budget of 2.
+        val epoch1 = iss.mintEpoch(
+            predicate = predicate,
+            maxMutations = 2L, maxBytes = null,
+        )
+        assertIs<CheckResult.Ok>(iss.checkAndRecordEpoch(epoch1, packet("net/1"), nowMs))
+        assertIs<CheckResult.Ok>(iss.checkAndRecordEpoch(epoch1, packet("net/2"), nowMs))
+        val third = iss.checkAndRecordEpoch(epoch1, packet("net/3"), nowMs)
+        assertTrue(refusedReason(third).contains("mutation bound"))
+
+        // Revoke the first epoch so the second does not overlap (C-4).
+        iss.revokeEpoch(epoch1.epoch)
+
+        // Second epoch with same predicate: fresh budget of 2.
+        // This is INTENTIONAL per C-4: epoch-local accounting.
+        // It does NOT imply lineage safety; see c4-decision-cross-epoch.md.
+        val epoch2 = iss.mintEpoch(
+            predicate = predicate,
+            maxMutations = 2L, maxBytes = null,
+        )
+        assertIs<CheckResult.Ok>(iss.checkAndRecordEpoch(epoch2, packet("net/1"), nowMs))
+        assertIs<CheckResult.Ok>(iss.checkAndRecordEpoch(epoch2, packet("net/2"), nowMs))
+        val epoch2Third = iss.checkAndRecordEpoch(epoch2, packet("net/3"), nowMs)
+        assertTrue(
+            refusedReason(epoch2Third).contains("mutation bound"),
+            "second epoch enforces its own local bound: $epoch2Third"
+        )
+    }
+
+    @Test
+    fun `c4 overlapping live epoch without explicit authorization refuses`() {
+        val iss = epochIssuer()
+        val predicate = CapabilityPredicate("net/", setOf("tun-packet"))
+
+        iss.mintEpoch(
+            predicate = predicate,
+            maxMutations = 2L, maxBytes = null,
+        )
+
+        // Second epoch with identical predicate while first is live: must refuse.
+        // Two live epochs over the same scope would provide additive budgets.
+        val ex = assertFailsWith<IllegalArgumentException> {
+            iss.mintEpoch(
+                predicate = predicate,
+                maxMutations = 2L, maxBytes = null,
+            )
+        }
+        assertTrue(
+            ex.message!!.contains("overlapping live epoch"),
+            "refusal names the C-4 overlap: ${ex.message}"
+        )
+    }
+
+    @Test
+    fun `c4 overlapping epoch with explicit additive authorization succeeds`() {
+        val iss = epochIssuer()
+        val predicate = CapabilityPredicate("net/", setOf("tun-packet"))
+
+        iss.mintEpoch(
+            predicate = predicate,
+            maxMutations = 2L, maxBytes = null,
+        )
+
+        // With allowOverlap=true (explicit sovereign authorization), succeeds.
+        val second = iss.mintEpoch(
+            predicate = predicate,
+            maxMutations = 2L, maxBytes = null,
+            allowOverlap = true,
+        )
+        assertNotNull(second.id)
+    }
+
+    @Test
+    fun `c4 non-overlapping predicate does not trigger overlap refusal`() {
+        val iss = epochIssuer()
+
+        iss.mintEpoch(
+            predicate = CapabilityPredicate("net/", setOf("tun-packet")),
+            maxMutations = 2L, maxBytes = null,
+        )
+
+        // Different predicate: no overlap, should succeed.
+        val other = iss.mintEpoch(
+            predicate = CapabilityPredicate("profile/", setOf("write")),
+            maxMutations = 2L, maxBytes = null,
+        )
+        assertNotNull(other.id)
     }
 }
