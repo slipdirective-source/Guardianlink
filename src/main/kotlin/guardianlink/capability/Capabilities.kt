@@ -405,6 +405,12 @@ open class CapabilityIssuer(
      * root from SovereignRoot.bootstrap().
      */
     val rootId: SovereignRootId = SovereignRootId(java.util.UUID.randomUUID().toString()),
+    /**
+     * Signing key for verifying cross-process issuance permits.
+     * Must match the SovereignRoot's key. Null means cross-process
+     * permits are not supported (in-process object-capability only).
+     */
+    internal val signingKey: ByteArray? = null,
 ) {
     private data class LiveRecord(
         val capability: Any, // MutationCapability | EpochCapability
