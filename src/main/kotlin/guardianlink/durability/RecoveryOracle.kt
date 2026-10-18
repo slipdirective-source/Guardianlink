@@ -125,6 +125,9 @@ fun applyOpAtomically(state: StoreState, op: StoreOp): StoreState {
             state.copy(revoked = state.revoked + op.capId)
         is StoreOp.RevokeEpoch ->
             state.copy(revokedEpochs = state.revokedEpochs + op.epoch)
+        // Permit consumption is tracked separately in DurableCapabilityStore
+        // (not in StoreState); this is a no-op for the oracle simulation.
+        is StoreOp.PermitConsumed -> state
     }
 }
 
