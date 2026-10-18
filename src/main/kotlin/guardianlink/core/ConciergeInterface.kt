@@ -14,6 +14,8 @@ import guardianlink.gates.SubstrateState
 import guardianlink.integrity.DeviceIntegrityTier
 import guardianlink.policy.PolicyEngine
 import guardianlink.voice.AudioSample
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * The composed interface: the principal's doorway into the system.
@@ -36,8 +38,11 @@ import guardianlink.voice.AudioSample
  * the engine ledger, but NOT durably published. Fail-loud, never silent —
  * the caller must handle it.
  *
- * Not thread-safe: serialize callers (the engine's evaluate is not
- * atomic across gates).
+ * Thread-safe: [execute] serializes callers on an internal commit lock.
+ * The engine's evaluate is not atomic across gates, so the boundary
+ * enforces serialization itself instead of requiring it of embedders:
+ * callers cannot reach the commit relation without serialization.
+ * (Sole-authority-path, crash-consistency law.)
  */
 class ConciergeInterface(
     private val policyEngine: PolicyEngine,
@@ -83,6 +88,16 @@ class ConciergeInterface(
 
     private var substrate: SubstrateState = initialSubstrate
 
+    /**
+     * Commit serialization, enforced at the boundary. Every path to
+     * a governed mutation crosses [execute], and [execute] cannot
+     * run concurrently with itself: check (gates), commit
+     * (substrate assignment), and durable publication (anchor) are
+     * one critical section. Embedders must not — and need not —
+     * serialize; the sidecar's external lock is defense in depth.
+     */
+    private val commitLock = ReentrantLock()
+
     fun handle(request: Request, deviceIntegrity: DeviceIntegrityTier.Level): Response {
         val decision = policyEngine.evaluate(
             requestedTier = request.tier,
@@ -98,7 +113,7 @@ class ConciergeInterface(
         return Response(decision, entry.index)
     }
 
-    fun execute(action: Action, evidence: ActionEvidence): ExecutionResult {
+    fun execute(action: Action, evidence: ActionEvidence): ExecutionResult = commitLock.withLock {
         val outcome = gates.evaluate(
             GateContext(
                 signal = evidence.signal,
