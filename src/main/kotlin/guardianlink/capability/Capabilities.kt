@@ -255,8 +255,11 @@ class SovereignRoot private constructor(
         )
 
     companion object {
-        fun bootstrap(rootId: SovereignRootId = SovereignRootId(java.util.UUID.randomUUID().toString())): SovereignRoot =
-            SovereignRoot(rootId)
+        fun bootstrap(rootId: SovereignRootId = SovereignRootId(java.util.UUID.randomUUID().toString())): SovereignRoot {
+            val key = ByteArray(32)
+            SecureRandom().nextBytes(key)
+            return SovereignRoot(rootId, key)
+        }
     }
 }
 
