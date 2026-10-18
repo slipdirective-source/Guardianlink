@@ -66,7 +66,7 @@ class CrashHarnessTest {
                 is StoreOp.RecordUsage -> StoreOp.RecordUsage(history.ops.size.toLong(), op.capId, op.bytes, op.maxMutations, op.maxBytes)
                 is StoreOp.Revoke -> StoreOp.Revoke(history.ops.size.toLong(), op.capId)
                 is StoreOp.RevokeEpoch -> StoreOp.RevokeEpoch(history.ops.size.toLong(), op.epoch)
-                is StoreOp.PermitConsumed -> store.recordPermitConsumption(seqOp.permitId)
+                is StoreOp.PermitConsumed -> StoreOp.PermitConsumed(history.ops.size.toLong(), op.permitId)
             }
             history.ops.add(seqOp)
             when (seqOp) {
@@ -79,7 +79,7 @@ class CrashHarnessTest {
                     )
                 is StoreOp.Revoke -> store.revoke(seqOp.capId)
                 is StoreOp.RevokeEpoch -> {}
-                is StoreOp.PermitConsumed -> store.recordPermitConsumption(seqOp.permitId)
+                is StoreOp.PermitConsumed -> StoreOp.PermitConsumed(history.ops.size.toLong(), op.permitId)
             }
             clock += 1_000L
         }
