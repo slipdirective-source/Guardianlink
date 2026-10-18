@@ -372,7 +372,7 @@ class CapabilityFalsificationTest {
     fun `revoked epoch capability refuses while ttl live`() {
         val fx = sovereignFixture()
         val cap = fx.tunEpoch()
-        iss.revoke(cap.id) // TTL still live: revocation ≠ expiry
+        fx.issuer.revokeEpoch(cap.epoch) // TTL still live: revocation ≠ expiry
         val r = fx.issuer.checkAndRecordEpoch(cap, packet("net/1"), nowMs)
         assertTrue(refusedReason(r).contains("revoked"), "revoked epoch accepted: $r")
     }
@@ -680,7 +680,7 @@ class CapabilityFalsificationTest {
             maxMutations = 2L, maxBytes = null,
         )
         val mutCap = fx.issuer.mintMutation(
-            mutationHash = sha256Hex("test".toByteArray()),
+            mutationHash = sha256Hex("test"),
             epochId = epoch.id,
         )
         // No API exists from MutationCapability to SovereignIssuanceAuthority.
