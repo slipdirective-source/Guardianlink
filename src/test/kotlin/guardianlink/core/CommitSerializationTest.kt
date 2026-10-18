@@ -2,6 +2,7 @@ package guardianlink.core
 
 import guardianlink.gates.Action
 import guardianlink.gates.SubstrateState
+import guardianlink.gates.Verifiers
 import guardianlink.integrity.DeviceIntegrityTier
 import guardianlink.policy.PolicyEngine
 import java.util.Collections
@@ -27,7 +28,9 @@ class CommitSerializationTest {
     fun `concurrent executes never overlap inside the gates`() {
         val concurrentEntries = AtomicInteger(0)
         val maxConcurrent = AtomicInteger(0)
-        val verifiers = object : PermissiveVerifiers() {
+        val inner = PermissiveVerifiers()
+        // PermissiveVerifiers is final: delegate the interface instead.
+        val verifiers = object : Verifiers by inner {
             override fun applyAction(substrate: SubstrateState, action: Action): SubstrateState {
                 val c = concurrentEntries.incrementAndGet()
                 maxConcurrent.updateAndGet { m -> maxOf(m, c) }
@@ -35,7 +38,7 @@ class CommitSerializationTest {
                     // Widen any race window: without the commit lock,
                     // overlap here is certain, not timing-dependent.
                     Thread.sleep(25)
-                    return super.applyAction(substrate, action)
+                    return inner.applyAction(substrate, action)
                 } finally {
                     concurrentEntries.decrementAndGet()
                 }
