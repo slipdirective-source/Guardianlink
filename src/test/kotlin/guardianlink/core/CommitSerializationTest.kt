@@ -41,6 +41,42 @@ class CommitSerializationTest {
     }
 
     @Test
+    fun `execute holds the commit lock for its full duration`() {
+        // White-box: proves serialization is enforced BY the boundary,
+        // not by callers. If the lock ever moves out of execute(), this fails.
+        val rig = testRig()
+        val lockField = ConciergeInterface::class.java.getDeclaredField("commitLock")
+        lockField.isAccessible = true
+        val lock = lockField.get(rig.concierge) as java.util.concurrent.locks.ReentrantLock
+
+        val action = Action.Write("profile", mapOf("lockprobe" to "1"))
+        val evidence = testEvidence(action, rig.voice, actionId = "lockprobe")
+        val entered = java.util.concurrent.atomic.AtomicBoolean(false)
+        val done = CountDownLatch(1)
+
+        // Hold the lock ourselves: execute() must block until we release.
+        lock.lock()
+        try {
+            thread {
+                try {
+                    val result = rig.concierge.execute(action, evidence)
+                    entered.set(result is ConciergeInterface.ExecutionResult.Executed)
+                } finally {
+                    done.countDown()
+                }
+            }
+            // Give the background thread a chance to (incorrectly) proceed.
+            Thread.sleep(200)
+            assertTrue(!entered.get(), "execute() proceeded without the commit lock")
+            assertTrue(!done.await(0, TimeUnit.MILLISECONDS), "execute() finished while lock held")
+        } finally {
+            lock.unlock()
+        }
+        assertTrue(done.await(10, TimeUnit.SECONDS), "execute() did not finish after unlock")
+        assertTrue(entered.get(), "execute() did not seal after unlock")
+    }
+
+    @Test
     fun `concurrent executes never overlap inside the gates`() {
         val concurrentEntries = AtomicInteger(0)
         val maxConcurrent = AtomicInteger(0)
