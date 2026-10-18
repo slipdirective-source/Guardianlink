@@ -30,7 +30,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /** Permissive verifiers for composition tests: all crypto checks pass. */
-internal class PermissiveVerifiers(
+internal open class PermissiveVerifiers(
     var revocationList: List<Revocation> = emptyList(),
 ) : Verifiers {
     override fun verifySignature(message: ByteArray, signature: ByteArray) = true
