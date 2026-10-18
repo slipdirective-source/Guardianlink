@@ -846,4 +846,126 @@ class CapabilityFalsificationTest {
         assertTrue(refusedReason(third).contains("mutation bound"))
         assertEquals(epoch1.lineageId, epoch2.lineageId)
     }
+
+    // =========================================================================
+    // Signed permit tests (cross-process issuance)
+    // =========================================================================
+
+    @Test
+    fun `signed permit verifies with correct key`() {
+        val root = SovereignRoot.bootstrap()
+        val issuer = CapabilityIssuer(
+            rootId = root.rootId,
+            signingKey = root.signingKey,
+            clockMs = { 60_000L },
+        )
+        val lineage = LineageId("test-${java.util.UUID.randomUUID()}")
+        val permit = root.issueSignedPermit(null, lineage)
+
+        // Should verify
+        assertTrue(SignedIssuancePermit.verify(permit, root.signingKey))
+    }
+
+    @Test
+    fun `signed permit rejects tampered payload`() {
+        val root = SovereignRoot.bootstrap()
+        val lineage = LineageId("test-${java.util.UUID.randomUUID()}")
+        val permit = root.issueSignedPermit(null, lineage)
+
+        // Tamper with lineage
+        val tampered = permit.copy(newLineageId = LineageId("evil").value)
+        assertFalse(SignedIssuancePermit.verify(tampered, root.signingKey))
+    }
+
+    @Test
+    fun `signed permit rejects wrong key`() {
+        val root1 = SovereignRoot.bootstrap()
+        val root2 = SovereignRoot.bootstrap()
+        val lineage = LineageId("test-${java.util.UUID.randomUUID()}")
+        val permit = root1.issueSignedPermit(null, lineage)
+
+        // Wrong key should fail
+        assertFalse(SignedIssuancePermit.verify(permit, root2.signingKey))
+    }
+
+    @Test
+    fun `mintEpochWithPermit succeeds with valid permit`() {
+        val root = SovereignRoot.bootstrap()
+        val issuer = CapabilityIssuer(
+            rootId = root.rootId,
+            signingKey = root.signingKey,
+            clockMs = { 60_000L },
+        )
+        val lineage = LineageId("test-${java.util.UUID.randomUUID()}")
+        val permit = root.issueSignedPermit(null, lineage)
+
+        val epoch = issuer.mintEpochWithPermit(
+            permit = permit,
+            predicate = CapabilityPredicate("test/", setOf("write")),
+            maxMutations = 5L,
+            maxBytes = null,
+        )
+        assertNotNull(epoch)
+        assertEquals(lineage.value, epoch.lineageId.value)
+    }
+
+    @Test
+    fun `mintEpochWithPermit rejects consumed permit`() {
+        val root = SovereignRoot.bootstrap()
+        val issuer = CapabilityIssuer(
+            rootId = root.rootId,
+            signingKey = root.signingKey,
+            clockMs = { 60_000L },
+        )
+        val lineage = LineageId("test-${java.util.UUID.randomUUID()}")
+        val permit = root.issueSignedPermit(null, lineage)
+
+        // First use succeeds
+        issuer.mintEpochWithPermit(
+            permit = permit,
+            predicate = CapabilityPredicate("test/", setOf("write")),
+            maxMutations = 5L,
+            maxBytes = null,
+        )
+
+        // Second use with same permit must fail
+        assertFailsWith<IllegalArgumentException> {
+            issuer.mintEpochWithPermit(
+                permit = permit,
+                predicate = CapabilityPredicate("test/", setOf("write")),
+                maxMutations = 5L,
+                maxBytes = null,
+                allowOverlap = true, // allow overlap to isolate the permit-reuse check
+            )
+        }
+    }
+
+    @Test
+    fun `mintEpochWithPermit rejects forged permit`() {
+        val root = SovereignRoot.bootstrap()
+        val issuer = CapabilityIssuer(
+            rootId = root.rootId,
+            signingKey = root.signingKey,
+            clockMs = { 60_000L },
+        )
+        val lineage = LineageId("test-${java.util.UUID.randomUUID()}")
+
+        // Forge a permit without the key (attacker tries to guess signature)
+        val forged = SignedIssuancePermit(
+            rootId = root.rootId.value,
+            permitId = java.util.UUID.randomUUID().toString(),
+            lineageId = null,
+            newLineageId = lineage.value,
+            signature = "00".repeat(32), // invalid signature
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            issuer.mintEpochWithPermit(
+                permit = forged,
+                predicate = CapabilityPredicate("test/", setOf("write")),
+                maxMutations = 5L,
+                maxBytes = null,
+            )
+        }
+    }
 }
