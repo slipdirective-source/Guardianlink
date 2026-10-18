@@ -106,7 +106,7 @@ data class MutationCapability(
      * cumulative bound via checkAndRecordEpoch. Fail closed if the binding
      * is absent when required, invalid, or unusable.
      */
-    val epochId: String?,
+    val epochId: String? = null,
 )
 
 /**
