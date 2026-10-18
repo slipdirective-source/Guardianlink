@@ -1,5 +1,9 @@
 package guardianlink.capability
 
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import java.security.SecureRandom
+
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -130,6 +134,79 @@ class SovereignIssuanceAuthority private constructor(
                 lineageId = lineageId,
                 newLineageId = newLineageId,
             )
+        }
+    }
+}
+
+/**
+ * A signed issuance permit for cross-process sovereign authority.
+ *
+ * The in-process SovereignIssuanceAuthority is an object-capability: it works
+ * within a single process because object identity is unforgeable. Across
+ * process boundaries, object identity does not survive serialization.
+ *
+ * This permit carries the same authority as a MAC (HMAC-SHA256). The signing
+ * key is held by the SovereignRoot/issuer and never leaves it. A holder
+ * cannot forge a permit without the key.
+ *
+ * The permitId is recorded in the WAL on use, providing single-use
+ * enforcement across restart.
+ */
+data class SignedIssuancePermit(
+    val rootId: String,
+    val permitId: String,
+    val lineageId: String?,
+    val newLineageId: String?,
+    val signature: String, // hex-encoded HMAC-SHA256
+) {
+    /** The signed payload: rootId|permitId|lineageId|newLineageId */
+    fun payload(): String = listOf(
+        rootId,
+        permitId,
+        lineageId ?: "",
+        newLineageId ?: ""
+    ).joinToString("|")
+
+    companion object {
+        internal fun sign(
+            rootId: String,
+            permitId: String,
+            lineageId: String?,
+            newLineageId: String?,
+            key: ByteArray,
+        ): SignedIssuancePermit {
+            val payload = listOf(rootId, permitId, lineageId ?: "", newLineageId ?: "").joinToString("|")
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(key, "HmacSHA256"))
+            val sig = mac.doFinal(payload.toByteArray(Charsets.UTF_8))
+            return SignedIssuancePermit(
+                rootId = rootId,
+                permitId = permitId,
+                lineageId = lineageId,
+                newLineageId = newLineageId,
+                signature = sig.joinToString("") { "%02x".format(it) },
+            )
+        }
+
+        internal fun verify(permit: SignedIssuancePermit, key: ByteArray): Boolean {
+            val expected = sign(
+                permit.rootId,
+                permit.permitId,
+                permit.lineageId,
+                permit.newLineageId,
+                key,
+            )
+            // Constant-time comparison to prevent timing attacks
+            return constantTimeEquals(expected.signature, permit.signature)
+        }
+
+        private fun constantTimeEquals(a: String, b: String): Boolean {
+            if (a.length != b.length) return false
+            var result = 0
+            for (i in a.indices) {
+                result = result or (a[i].code xor b[i].code)
+            }
+            return result == 0
         }
     }
 }
