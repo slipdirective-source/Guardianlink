@@ -78,7 +78,8 @@ class SidecarServer(
      * pending action. The person must speak the returned phrase; the PCM
      * goes back with the assent. Ceremonies are serial per sidecar
      * instance (the engine holds one active challenge): 409 while another
-     * action's ceremony is live.
+     * action's ceremony is live; unknown actionIds are 404 regardless of
+     * ceremony state.
      */
     private fun handleChallenge(ex: HttpExchange, actionId: String) {
         if (!requireMethod(ex, "GET")) return

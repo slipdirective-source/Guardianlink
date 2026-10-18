@@ -174,11 +174,9 @@ class SidecarEndToEndTest {
         val (cs2, _) = get("/v1/actions/$actionId/challenge")
         assertEquals(200, cs2, "re-issue for the SAME action replaces the challenge")
 
-        // Unknown action while a ceremony is live → 409, not 404: the
-        // engine holds exactly one active challenge, and busyness takes
-        // precedence (documented in GuardianLinkEngine.issueChallenge).
+        // Unknown action → 404, even while a ceremony is live.
         val (cs3, _) = get("/v1/actions/act_nope/challenge")
-        assertEquals(409, cs3)
+        assertEquals(404, cs3)
     }
 
     @Test
