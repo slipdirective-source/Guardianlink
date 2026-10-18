@@ -219,7 +219,27 @@ data class SignedIssuancePermit(
  */
 class SovereignRoot private constructor(
     val rootId: SovereignRootId,
+    internal val signingKey: ByteArray,
 ) {
+    /**
+     * Issue a signed permit for cross-process use.
+     * The permit carries HMAC-SHA256 authentication; the key never leaves this root.
+     */
+    fun issueSignedPermit(
+        lineageId: LineageId?,
+        newLineageId: LineageId?,
+    ): SignedIssuancePermit {
+        require((lineageId == null) != (newLineageId == null)) {
+            "Exactly one of lineageId (rotate) or newLineageId (new lineage) must be set"
+        }
+        return SignedIssuancePermit.sign(
+            rootId = rootId.value,
+            permitId = java.util.UUID.randomUUID().toString(),
+            lineageId = lineageId?.value,
+            newLineageId = newLineageId?.value,
+            key = signingKey,
+        )
+    }
     fun rotateAuthority(lineageId: LineageId): SovereignIssuanceAuthority =
         SovereignIssuanceAuthority.create(
             rootId = rootId,
