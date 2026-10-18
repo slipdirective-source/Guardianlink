@@ -24,6 +24,21 @@ import org.junit.jupiter.api.Test
 class CommitSerializationTest {
 
     @Test
+    fun `sequential executes all seal`() {
+        val rig = testRig()
+        repeat(8) { i ->
+            val action = Action.Write("seq-$i", mapOf("v" to "$i"))
+            val result = rig.concierge.execute(
+                action, testEvidence(action, rig.voice, actionId = "seq-$i")
+            )
+            assertTrue(
+                result is ConciergeInterface.ExecutionResult.Executed,
+                "sequential execute $i did not seal: $result"
+            )
+        }
+    }
+
+    @Test
     fun `concurrent executes never overlap inside the gates`() {
         val concurrentEntries = AtomicInteger(0)
         val maxConcurrent = AtomicInteger(0)
