@@ -96,7 +96,7 @@ class C1CompositionFalsificationTest {
         )
 
     @Test
-    fun `c1: three mutations commit against epoch allowing two`() {
+    fun `c1 - three mutations commit against epoch allowing two`() {
         val iss = syncedIssuer()
         // Spec v2.1 authority boundary: epoch allows 2 mutations.
         val epochCap = iss.mintEpoch(
