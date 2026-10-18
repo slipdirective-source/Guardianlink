@@ -256,10 +256,37 @@ open class CapabilityIssuer(
         maxMutations: Long?,
         maxBytes: Long?,
         ttlMs: Long = maxEpochTtlMs,
+        /**
+         * C-4: Explicit authorization for overlapping epochs. If false (default),
+         * minting refuses when a live epoch already governs the same exact predicate.
+         * Two live epochs over the same scope would provide additive budgets (2N),
+         * a composition channel. Set true only when the overlap is explicitly
+         * authorized as additive by the sovereign issuance path.
+         */
+        allowOverlap: Boolean = false,
     ): EpochCapability {
         require(ttlMs in 1..maxEpochTtlMs) { "epoch TTL out of bounds" }
         val now = clockMs()
-        val epoch = synchronized(lock) { nextEpoch++ }
+        val epoch = synchronized(lock) {
+            if (!allowOverlap) {
+                // C-4: prohibit concurrent epochs over the same exact scope.
+                // A live epoch is unrevoked, unexpired, and its epoch number not revoked.
+                for (rec in live.values) {
+                    val existing = rec.capability as? EpochCapability ?: continue
+                    if (rec.revoked) continue
+                    if (existing.epoch in revokedEpochs) continue
+                    if (now < existing.notBeforeMs || now >= existing.notAfterMs) continue
+                    if (existing.predicate == predicate) {
+                        throw IllegalArgumentException(
+                            "C-4: overlapping live epoch for same predicate " +
+                            "(existing=${existing.id}, epoch=${existing.epoch}). " +
+                            "Set allowOverlap=true only with explicit sovereign authorization."
+                        )
+                    }
+                }
+            }
+            nextEpoch++
+        }
         val cap = EpochCapability(
             id = UUID.randomUUID().toString(),
             epoch = epoch,
