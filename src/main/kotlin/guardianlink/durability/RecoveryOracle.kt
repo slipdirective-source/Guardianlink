@@ -73,6 +73,9 @@ sealed interface StoreOp {
 
     /** Coarse revocation: kills the whole epoch. Idempotent. */
     data class RevokeEpoch(override val seq: Long, val epoch: Long) : StoreOp
+
+    /** Sovereign issuance permit consumption. Idempotent: re-applying is a no-op. */
+    data class PermitConsumed(override val seq: Long, val permitId: String) : StoreOp
 }
 
 // ---------- Observable state ----------
