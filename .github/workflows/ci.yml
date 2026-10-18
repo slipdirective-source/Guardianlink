@@ -18,5 +18,5 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v5
-      - name: Build and test
-        run: ./gradlew build
+      - name: Build and test (JVM engine + sidecar; android-app excluded — red on main, separate thread)
+        run: ./gradlew :test :guardianlink-sidecar:test

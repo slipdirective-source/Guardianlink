@@ -204,11 +204,17 @@ class GuardianLinkEngine(
      * the same action replaces the challenge (the engine's challenge is
      * single-use); issuing while another action's ceremony is live is
      * refused — the engine holds exactly one active challenge, so silent
-     * replacement would be a confusion vector.
+     * replacement would be a confusion vector. Unknown actionIds are 404
+     * regardless of ceremony state (checked before busyness).
      */
     fun issueChallenge(actionId: String): ChallengeResult = executeLock.withLock {
         evictExpired()
         val now = clock.nowMs()
+        // Unknown actions are rejected before the busy check: a nonexistent
+        // actionId is 404 even while a ceremony is live. Checking busyness
+        // first would leak ceremony liveness to probes of nonexistent ids,
+        // and 404 is the truthful status for "no such action."
+        if (!pending.containsKey(actionId)) return ChallengeResult.UnknownAction
         activeCeremony?.let { c ->
             if (now - c.issuedAtMs <= CHALLENGE_TTL_MS) {
                 if (c.actionId == actionId) {
@@ -221,7 +227,6 @@ class GuardianLinkEngine(
             }
             activeCeremony = null // lapsed
         }
-        if (!pending.containsKey(actionId)) return ChallengeResult.UnknownAction
         val challenge = voiceVerifier.issueChallenge()
         activeCeremony = ActiveCeremony(actionId, challenge.phraseId, now)
         ChallengeResult.Issued(challengeId = challenge.phraseId, phrase = challenge.prompt)

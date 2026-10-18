@@ -7,6 +7,7 @@ import guardianlink.gates.Action
 import guardianlink.gates.Assent
 import guardianlink.gates.FakeClock
 import guardianlink.gates.KeyMaterial
+import guardianlink.gates.MonotonicClock
 import guardianlink.gates.NineGates
 import guardianlink.gates.Proofs
 import guardianlink.gates.Rails
@@ -55,12 +56,16 @@ internal data class TestRig(
 )
 
 /** A composed concierge with engine-owned instruments and a real anchor file. */
-internal fun testRig(tau: Long = 60_000L, verifiers: PermissiveVerifiers = PermissiveVerifiers()): TestRig {
+internal fun testRig(
+    tau: Long = 60_000L,
+    verifiers: PermissiveVerifiers = PermissiveVerifiers(),
+    clock: MonotonicClock = FakeClock(tau),
+): TestRig {
     val anchorDir = Files.createTempDirectory("guardianlink-test-anchors")
     val (voiceVerifier, enrolledVoice) = TestVoice.anchor()
     val gates = NineGates(
         Rails(), verifiers, voiceVerifier, enrolledVoice,
-        clock = FakeClock(tau), ledger = MerkleAuditLog(),
+        clock = clock, ledger = MerkleAuditLog(),
     )
     val anchor = AppendOnlyFileAnchor(anchorDir)
     val concierge = ConciergeInterface(
@@ -157,9 +162,11 @@ class GovernedExecutionTest {
             rig.concierge.execute(write, testEvidence(write, rig.voice))
         )
         // Second action sees the first action's substrate — one governed
-        // state machine, not one shot per call.
+        // state machine, not one shot per call. Fresh actionId: assents are
+        // single-use, so the second authorized action carries its own id.
         val delete = Action.Delete("profile")
-        val result = rig.concierge.execute(delete, testEvidence(delete, rig.voice))
+        val result = rig.concierge.execute(
+            delete, testEvidence(delete, rig.voice, actionId = "test-2"))
         val executed = assertIs<ConciergeInterface.ExecutionResult.Executed>(result)
         assertTrue("profile" !in executed.newSubstrate.records)
         assertEquals(2, anchorLineCount(rig.anchorDir))

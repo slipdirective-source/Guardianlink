@@ -121,6 +121,42 @@ class NineGates(
      * recursion, custom Error subclasses). Letting those escape would
      * bypass the halt ledger — the engine must halt, nothing escapes.
      */
+    /**
+     * ActionIds consumed by a sealed execution, mapped to the assentedAtMs
+     * of the assent they consumed. An assent binds exactly one pending
+     * action: once the seal commits, the assent is consumed and the same
+     * actionId may never execute again through this engine instance.
+     * Without this, the exact replay of an authorized (action, evidence)
+     * pair would re-execute — one human assent mutating the substrate N
+     * times. The signature binding defeats forged and cross-action replay;
+     * this map defeats exact replay. Fresh authorizations use fresh actionIds.
+     *
+     * The keys decay with time: a seal record lives exactly as long as the
+     * assent it consumed could still be valid (Gate 7's theta_assent_idle
+     * death condition). Once the assent is dead, no replay could succeed,
+     * so the record is evicted — bounding memory and aligning the
+     * replay-protection window with the assent-validity window. This is the
+     * time-decay on the sole writer's keys: write authority for an actionId
+     * expires with the assent that granted it, even if the record itself is
+     * lost (crash) — a stale key is a dead key.
+     */
+    private val sealedActionIds = mutableMapOf<String, Long>()
+
+    /**
+     * Evict decayed seal records. A record dies exactly when the assent it
+     * consumed dies (theta_assent_idle): assent age past maxAssentIdleMs AND
+     * ledger silent past maxAssentIdleMs, mirroring Gate 7's condition via
+     * the shared ledgerIdleMs helper.
+     */
+    private fun evictDecayedSeals(nowMs: Long) {
+        val snapshot = ledger.lastAppendMs()
+        sealedActionIds.entries.removeIf { (_, assentedAt) ->
+            val age = nowMs - assentedAt
+            age > rails.maxAssentIdleMs &&
+                ledgerIdleMs(nowMs, snapshot, age) > rails.maxAssentIdleMs
+        }
+    }
+
     private inline fun <T> checked(block: () -> T): T? =
         try {
             block()
@@ -153,6 +189,15 @@ class NineGates(
     }
 
     fun evaluate(ctx: GateContext): GateOutcome {
+        // Time-decay the sole writer's keys, then enforce consumption: an
+        // actionId sealed by this engine instance may not execute again
+        // while its key is live. Checked before any gate so a replay never
+        // invokes adapters or touches the prepared-transition slot.
+        evictDecayedSeals(clock.nowMs())
+        if (sealedActionIds.containsKey(ctx.actionId)) {
+            appendAudit("HALT gate=7 action=${ctx.actionId} reason=theta_assent: assent already consumed by a sealed execution")
+            return GateOutcome.Halted(7, "theta_assent: assent already consumed by a sealed execution")
+        }
         val prep = Prepared()
         // theta_assent_idle needs the ledger's last-append time as of ENTRY:
         // halt/seal records are appended during the run, so a live read
@@ -196,6 +241,7 @@ class NineGates(
             appendAudit("HALT gate=8 action=${ctx.actionId} reason=$reason")
             return GateOutcome.Halted(8, reason)
         }
+        sealedActionIds[ctx.actionId] = ctx.assentedAtMs
         appendAudit("SEAL action=${ctx.actionId} rendering=${ctx.rendering}")
         return GateOutcome.Integrated(newSubstrate, sealRoot = ledger.root)
     }
