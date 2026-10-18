@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+      - name: Make wrapper executable
+        run: chmod +x gradlew
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
@@ -33,8 +35,8 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: 8.5
-      - name: Build
-        run: gradle compileKotlin compileTestKotlin
+      - name: Build (JVM engine + sidecar only; android-app excluded — matches CI scope)
+        run: ./gradlew :compileKotlin :compileTestKotlin :guardianlink-sidecar:compileKotlin :guardianlink-sidecar:compileTestKotlin
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
