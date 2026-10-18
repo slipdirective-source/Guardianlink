@@ -30,7 +30,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /** Permissive verifiers for composition tests: all crypto checks pass. */
-internal class PermissiveVerifiers(
+internal open class PermissiveVerifiers(
     var revocationList: List<Revocation> = emptyList(),
 ) : Verifiers {
     override fun verifySignature(message: ByteArray, signature: ByteArray) = true
@@ -51,14 +51,14 @@ internal data class TestRig(
     val gates: NineGates,
     val anchor: AppendOnlyFileAnchor,
     val anchorDir: Path,
-    val verifiers: Verifiers,
+    val verifiers: PermissiveVerifiers,
     val voice: GmmUbmVoiceVerifier,
 )
 
 /** A composed concierge with engine-owned instruments and a real anchor file. */
 internal fun testRig(
     tau: Long = 60_000L,
-    verifiers: Verifiers = PermissiveVerifiers(),
+    verifiers: PermissiveVerifiers = PermissiveVerifiers(),
     clock: MonotonicClock = FakeClock(tau),
 ): TestRig {
     val anchorDir = Files.createTempDirectory("guardianlink-test-anchors")
