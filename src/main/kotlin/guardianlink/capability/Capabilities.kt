@@ -52,7 +52,7 @@ class SecurityState {
     private val versions = ConcurrentHashMap<String, Long>()
     fun versionOf(dep: String): Long = versions.getOrDefault(dep, 0L)
     fun noteChange(dep: String) {
-        versions.merge(dep, 1L, Long::sum)
+        versions.merge(dep, 1L) { a, b -> a + b }
     }
     fun snapshot(): Map<String, Long> = versions.toMap()
 }
@@ -249,16 +249,16 @@ open class CapabilityIssuer(
         rendering: String,
         t_c: Long,
     ): CheckResult = synchronized(lock) {
-        val rec = live[cap.id] ?: return Refused("capability not minted by this issuer")
-        if (rec.revoked) return Refused("capability revoked")
-        if (rec.consumed) return Refused("capability already consumed")
-        if (rec.capability != cap) return Refused("capability fields differ from issuance record")
-        if (t_c < cap.notBeforeMs) return Refused("capability not yet valid")
-        if (t_c > cap.notAfterMs) return Refused("capability expired") // brutal: no grace, even 1ms
-        if (cap.mutationHash != sha256Hex(rendering)) return Refused("mutation hash mismatch")
+        val rec = live[cap.id] ?: return CheckResult.Refused("capability not minted by this issuer")
+        if (rec.revoked) return CheckResult.Refused("capability revoked")
+        if (rec.consumed) return CheckResult.Refused("capability already consumed")
+        if (rec.capability != cap) return CheckResult.Refused("capability fields differ from issuance record")
+        if (t_c < cap.notBeforeMs) return CheckResult.Refused("capability not yet valid")
+        if (t_c > cap.notAfterMs) return CheckResult.Refused("capability expired") // brutal: no grace, even 1ms
+        if (cap.mutationHash != sha256Hex(rendering)) return CheckResult.Refused("mutation hash mismatch")
         for ((dep, v) in cap.stateDeps) {
             if (securityState.versionOf(dep) != v)
-                return Refused("state dep '$dep' changed: capability void")
+                return CheckResult.Refused("state dep '$dep' changed: capability void")
         }
         rec.consumed = true
         return CheckResult.Ok
@@ -283,45 +283,45 @@ open class CapabilityIssuer(
             // against the live parent. The holder derived autonomously;
             // the boundary re-verifies.
             parentRec = live[cap.parentId]
-                ?: return Refused("attenuated parent unknown to this issuer")
-            if (parentRec.revoked) return Refused("attenuated parent revoked")
+                ?: return CheckResult.Refused("attenuated parent unknown to this issuer")
+            if (parentRec.revoked) return CheckResult.Refused("attenuated parent revoked")
             val p = parentRec.capability as? EpochCapability
-                ?: return Refused("attenuated parent is not an epoch capability")
-            if (p.epoch in revokedEpochs) return Refused("attenuated parent epoch revoked")
+                ?: return CheckResult.Refused("attenuated parent is not an epoch capability")
+            if (p.epoch in revokedEpochs) return CheckResult.Refused("attenuated parent epoch revoked")
             if (!p.predicate.isNarrowerOrEqual(cap.predicate))
-                return Refused("attenuated predicate wider than parent")
+                return CheckResult.Refused("attenuated predicate wider than parent")
             if (cap.notAfterMs > p.notAfterMs)
-                return Refused("attenuated lifetime exceeds parent")
+                return CheckResult.Refused("attenuated lifetime exceeds parent")
             if (!boundNarrowerOrEqual(cap.maxMutations, p.maxMutations))
-                return Refused("attenuated mutation bound exceeds parent")
+                return CheckResult.Refused("attenuated mutation bound exceeds parent")
             if (!boundNarrowerOrEqual(cap.maxBytes, p.maxBytes))
-                return Refused("attenuated byte bound exceeds parent")
+                return CheckResult.Refused("attenuated byte bound exceeds parent")
             if (cap.stateDeps != p.stateDeps)
-                return Refused("attenuated state deps differ from parent")
+                return CheckResult.Refused("attenuated state deps differ from parent")
             rec = LiveRecord(cap)
             live[cap.id] = rec
         }
-        rec = rec ?: return Refused("capability not minted by this issuer")
-        if (rec.revoked) return Refused("capability revoked")
+        rec = rec ?: return CheckResult.Refused("capability not minted by this issuer")
+        if (rec.revoked) return CheckResult.Refused("capability revoked")
         val epochOf: Long = (rec.capability as? EpochCapability)?.epoch
-            ?: return Refused("not an epoch capability")
-        if (epochOf in revokedEpochs) return Refused("epoch revoked")
+            ?: return CheckResult.Refused("not an epoch capability")
+        if (epochOf in revokedEpochs) return CheckResult.Refused("epoch revoked")
         // Attenuated child already registered: the parent's epoch must
         // still be live (revocation propagates down).
         if (cap.parentId != null && parentRec == null) {
-            parentRec = live[cap.parentId] ?: return Refused("attenuated parent unknown")
-            if (parentRec.revoked) return Refused("attenuated parent revoked")
+            parentRec = live[cap.parentId] ?: return CheckResult.Refused("attenuated parent unknown")
+            if (parentRec.revoked) return CheckResult.Refused("attenuated parent revoked")
             val p = parentRec.capability as? EpochCapability
-            if (p == null || p.epoch in revokedEpochs) return Refused("attenuated parent epoch revoked")
+            if (p == null || p.epoch in revokedEpochs) return CheckResult.Refused("attenuated parent epoch revoked")
         }
-        if (rec.capability != cap) return Refused("capability fields differ from issuance record")
-        if (t_c < cap.notBeforeMs) return Refused("capability not yet valid")
-        if (t_c > cap.notAfterMs) return Refused("capability expired")
+        if (rec.capability != cap) return CheckResult.Refused("capability fields differ from issuance record")
+        if (t_c < cap.notBeforeMs) return CheckResult.Refused("capability not yet valid")
+        if (t_c > cap.notAfterMs) return CheckResult.Refused("capability expired")
         if (!cap.predicate.allows(effect.target, effect.type))
-            return Refused("effect outside admitted predicate")
+            return CheckResult.Refused("effect outside admitted predicate")
         for ((dep, v) in cap.stateDeps) {
             if (securityState.versionOf(dep) != v)
-                return Refused("state dep '$dep' changed: capability void")
+                return CheckResult.Refused("state dep '$dep' changed: capability void")
         }
         // H1: bound-check and consumption-record are one atomic step.
         // Overcounting (conservative) is preferred to undercounting:
@@ -329,18 +329,18 @@ open class CapabilityIssuer(
         val newMutations = rec.usageMutations + 1
         val newBytes = rec.usageBytes + effect.bytes
         if (cap.maxMutations != null && newMutations > cap.maxMutations)
-            return Refused("epoch mutation bound exceeded")
+            return CheckResult.Refused("epoch mutation bound exceeded")
         if (cap.maxBytes != null && newBytes > cap.maxBytes)
-            return Refused("epoch byte bound exceeded")
+            return CheckResult.Refused("epoch byte bound exceeded")
         // Attenuated child: the parent's envelope must also hold.
         if (parentRec != null) {
             val p = parentRec.capability as EpochCapability
             val pNewMutations = parentRec.usageMutations + 1
             val pNewBytes = parentRec.usageBytes + effect.bytes
             if (p.maxMutations != null && pNewMutations > p.maxMutations)
-                return Refused("parent epoch mutation bound exceeded")
+                return CheckResult.Refused("parent epoch mutation bound exceeded")
             if (p.maxBytes != null && pNewBytes > p.maxBytes)
-                return Refused("parent epoch byte bound exceeded")
+                return CheckResult.Refused("parent epoch byte bound exceeded")
             parentRec.usageMutations = pNewMutations
             parentRec.usageBytes = pNewBytes
         }
