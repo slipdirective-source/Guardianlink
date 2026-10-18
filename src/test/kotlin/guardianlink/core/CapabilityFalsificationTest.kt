@@ -88,6 +88,13 @@ class CapabilityFalsificationTest {
         )
     }
 
+    /**
+     * An issuer whose clock is synced to the gates' FakeClock(60_000L).
+     * The commit point binds notBeforeMs to the gates' t_c; a mismatched
+     * issuer clock makes fresh capabilities "not yet valid".
+     */
+    private fun syncedIssuer() = CapabilityIssuer(clockMs = { 60_000L })
+
     private fun evidenceFor(action: Action, actionId: String) =
         ConciergeInterface.ActionEvidence(
             actionId = actionId,
@@ -200,7 +207,7 @@ class CapabilityFalsificationTest {
 
     @Test
     fun `execute seals through the capability commit point`() {
-        val concierge = conciergeWith(issuer())
+        val concierge = conciergeWith(syncedIssuer())
         val action = Action.Write("profile", mapOf("cap" to "1"))
         val result = concierge.execute(action, evidenceFor(action, "cap-1"))
         assertIs<ConciergeInterface.ExecutionResult.Executed>(
@@ -415,8 +422,10 @@ class CapabilityFalsificationTest {
     fun `attenuated child enforces the narrowed predicate`() {
         val iss = epochIssuer()
         val parent = tunEpoch(iss)
+        // Note: predicates are STRING prefixes, not CIDR. "net/10." is a
+        // string-narrowing of "net/".
         val child = parent.attenuateTo(
-            CapabilityPredicate("net/10.0.0.0/8", setOf("tun-packet"))
+            CapabilityPredicate("net/10.", setOf("tun-packet"))
         ) ?: error("valid attenuation returned null")
         // Inside the child's narrowed envelope: commits.
         assertIs<CheckResult.Ok>(

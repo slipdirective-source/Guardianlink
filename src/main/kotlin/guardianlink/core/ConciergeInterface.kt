@@ -154,9 +154,15 @@ class ConciergeInterface(
                 // live, unconsumed capability. Predicate-not-possession is
                 // structural here — the commit does not consult the gates'
                 // verdict directly, only the capability.
+                //
+                // notBeforeMs is bound to t_c (the commit instant), not to a
+                // second clock read: otherwise a clock tick between the read
+                // and the mint would make the fresh capability "not yet
+                // valid" — a TOCTOU race in the commit point itself.
                 val t_c = gates.clock.nowMs()
                 val cap = issuer.mintMutation(
                     mutationHash = sha256Hex(evidence.rendering),
+                    notBeforeMs = t_c,
                 )
                 when (val c = issuer.checkAndConsumeMutation(cap, evidence.rendering, t_c)) {
                     is CheckResult.Refused ->

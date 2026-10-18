@@ -199,14 +199,15 @@ open class CapabilityIssuer(
     fun mintMutation(
         mutationHash: String,
         ttlMs: Long = maxMutationTtlMs,
+        notBeforeMs: Long = clockMs(),
     ): MutationCapability {
         require(ttlMs in 1..maxMutationTtlMs) { "mutation TTL out of bounds" }
         val now = clockMs()
         val cap = MutationCapability(
             id = UUID.randomUUID().toString(),
             mutationHash = mutationHash,
-            notBeforeMs = now,
-            notAfterMs = now + ttlMs,
+            notBeforeMs = notBeforeMs,
+            notAfterMs = notBeforeMs + ttlMs,
             stateDeps = securityState.snapshot(),
             issuerId = issuerId,
         )
