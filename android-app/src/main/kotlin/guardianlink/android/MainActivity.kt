@@ -76,7 +76,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun runDemoAction() {
         val app = application as GuardianApp
-        if (!app::dispatcher.isInitialized) {
+        if (!app.isEngineReady()) {
             status.text = "Engine still initializing… try again in a few seconds."
             return
         }
