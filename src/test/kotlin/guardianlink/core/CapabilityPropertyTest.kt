@@ -27,12 +27,32 @@ import org.junit.jupiter.api.Test
  */
 class CapabilityPropertyTest {
 
+
+    private var propLineageCounter = 0
+    private lateinit var propRoot: SovereignRoot
+
+    private fun propMint(
+        iss: CapabilityIssuer,
+        predicate: CapabilityPredicate,
+        maxMutations: Long?,
+        maxBytes: Long?,
+    ): EpochCapability {
+        val lid = LineageId("prop-${propLineageCounter++}-${java.util.UUID.randomUUID()}")
+        return iss.mintEpoch(
+            authority = propRoot.newLineageAuthority(lid),
+            predicate = predicate,
+            maxMutations = maxMutations,
+            maxBytes = maxBytes,
+        )
+    }
+
     @Test
     fun `expired mutation capability always refuses regardless of other fields`() {
         val random = Random(42)
         repeat(300) { trial ->
             var now = random.nextLong(0, 10_000_000L)
-            val iss = CapabilityIssuer(clockMs = { now })
+            propRoot = SovereignRoot.bootstrap()
+            val iss = CapabilityIssuer(clockMs = { now }, rootId = propRoot.rootId)
             val ttl = random.nextLong(1, 100_000L)
             val rendering = "rendering-${random.nextInt()}"
             val cap = iss.mintMutation(sha256Hex(rendering), ttlMs = ttl)
@@ -50,7 +70,8 @@ class CapabilityPropertyTest {
         val random = Random(43)
         repeat(300) { trial ->
             var now = random.nextLong(1_000_000L, 10_000_000L)
-            val iss = CapabilityIssuer(clockMs = { now })
+            propRoot = SovereignRoot.bootstrap()
+            val iss = CapabilityIssuer(clockMs = { now }, rootId = propRoot.rootId)
             val rendering = "rendering-${random.nextInt()}"
             val cap = iss.mintMutation(sha256Hex(rendering))
             // Check at a time before notBeforeMs.
@@ -67,7 +88,8 @@ class CapabilityPropertyTest {
         val random = Random(44)
         repeat(200) { trial ->
             var now = random.nextLong(0, 10_000_000L)
-            val iss = CapabilityIssuer(clockMs = { now })
+            propRoot = SovereignRoot.bootstrap()
+            val iss = CapabilityIssuer(clockMs = { now }, rootId = propRoot.rootId)
             val rendering = "rendering-${random.nextInt()}"
             val cap = iss.mintMutation(sha256Hex(rendering))
             assertIs<CheckResult.Ok>(
@@ -91,7 +113,8 @@ class CapabilityPropertyTest {
         val random = Random(45)
         repeat(300) { trial ->
             var now = random.nextLong(0, 10_000_000L)
-            val iss = CapabilityIssuer(clockMs = { now })
+            propRoot = SovereignRoot.bootstrap()
+            val iss = CapabilityIssuer(clockMs = { now }, rootId = propRoot.rootId)
             val rendering = "rendering-${random.nextInt()}"
             val cap = iss.mintMutation(sha256Hex(rendering))
             // A different rendering (overwhelmingly likely a different hash).
@@ -110,10 +133,12 @@ class CapabilityPropertyTest {
         val random = Random(46)
         repeat(150) { trial ->
             var now = 1_000_000L
-            val iss = CapabilityIssuer(clockMs = { now })
+            propRoot = SovereignRoot.bootstrap()
+            val iss = CapabilityIssuer(clockMs = { now }, rootId = propRoot.rootId)
             val maxMut = random.nextLong(1, 20L)
             val maxBytes = random.nextLong(100, 2000L)
-            val cap = iss.mintEpoch(
+            val cap = propMint(
+                iss,
                 predicate = CapabilityPredicate("net/", setOf("tun-packet")),
                 maxMutations = maxMut,
                 maxBytes = maxBytes,
@@ -153,12 +178,13 @@ class CapabilityPropertyTest {
         val types = listOf("tun-packet", "raw-socket", "", "write", "a")
         repeat(400) { trial ->
             var now = 1_000_000L
-            val iss = CapabilityIssuer(clockMs = { now })
+            propRoot = SovereignRoot.bootstrap()
+            val iss = CapabilityIssuer(clockMs = { now }, rootId = propRoot.rootId)
             val pred = CapabilityPredicate(
                 targetPrefix = prefixes.random(random),
                 allowedTypes = typeSets.random(random),
             )
-            val cap = iss.mintEpoch(pred, maxMutations = 10_000L, maxBytes = null)
+            val cap = propMint(iss, pred, maxMutations = 10_000L, maxBytes = null)
             val target = targets.random(random)
             val type = types.random(random)
             // The spec's predicate, evaluated independently of the commit path.
@@ -183,12 +209,13 @@ class CapabilityPropertyTest {
         val typeSets = listOf(null, setOf("tun-packet"), setOf("tun-packet", "x"))
         repeat(400) { trial ->
             var now = 1_000_000L
-            val iss = CapabilityIssuer(clockMs = { now })
+            propRoot = SovereignRoot.bootstrap()
+            val iss = CapabilityIssuer(clockMs = { now }, rootId = propRoot.rootId)
             val parentPred = CapabilityPredicate(
                 targetPrefix = prefixes.random(random),
                 allowedTypes = typeSets.random(random),
             )
-            val parent = iss.mintEpoch(parentPred, maxMutations = 100L, maxBytes = 10_000L)
+            val parent = propMint(iss, parentPred, maxMutations = 100L, maxBytes = 10_000L)
             val childPred = CapabilityPredicate(
                 targetPrefix = prefixes.random(random),
                 allowedTypes = typeSets.random(random),
