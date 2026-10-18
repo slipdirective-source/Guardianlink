@@ -76,7 +76,8 @@ class AssentReplayRedTeamTest {
         val clock = FakeClock(60_000L)
         val rig = testRig(clock = clock)
         val action = Action.Write("profile", mapOf("name" to "Neo"))
-        val evidence = testEvidence(action, rig.voice, assentedAtMs = 60_000L)
+        // assentedAtMs=0: age 60s clears the 5s cooling window.
+        val evidence = testEvidence(action, rig.voice, assentedAtMs = 0L)
 
         // Seal it: the key is live.
         assertIs<ConciergeInterface.ExecutionResult.Executed>(
@@ -96,7 +97,7 @@ class AssentReplayRedTeamTest {
         // assent's death from proof staleness), must halt at Gate 7 on
         // theta_assent_idle — not at the seal check, proving the key decayed.
         val staleEvidence = testEvidence(action, rig.voice,
-            tau = clock.t, assentedAtMs = 60_000L)
+            tau = clock.t, assentedAtMs = 0L)
         val staleReplay = assertIs<ConciergeInterface.ExecutionResult.Rejected>(
             rig.concierge.execute(action, staleEvidence))
         assertTrue(staleReplay.reason.contains("theta_assent_idle"),
@@ -111,15 +112,15 @@ class AssentReplayRedTeamTest {
 
         assertIs<ConciergeInterface.ExecutionResult.Executed>(
             rig.concierge.execute(action, testEvidence(action, rig.voice,
-                assentedAtMs = 60_000L)))
+                assentedAtMs = 0L)))
 
         // 25h of silence: the old key decays.
         clock.t += 25 * 3_600_000L
 
         // A fresh ceremony (new assent) for the same actionId is a new key:
-        // the decayed record must not block it.
+        // the decayed record must not block it. (Age 10s clears cooling.)
         val fresh = rig.concierge.execute(action, testEvidence(action, rig.voice,
-            tau = clock.t, assentedAtMs = clock.t))
+            tau = clock.t, assentedAtMs = clock.t - 10_000L))
         assertIs<ConciergeInterface.ExecutionResult.Executed>(fresh)
     }
 }
