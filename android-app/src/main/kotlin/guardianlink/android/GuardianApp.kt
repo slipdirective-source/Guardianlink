@@ -43,6 +43,9 @@ class GuardianApp : Application() {
 
     lateinit var dispatcher: ActionDispatcher
         private set
+
+    /** Returns true if the engine has finished initialization. */
+    fun isEngineReady(): Boolean = ::dispatcher.isInitialized
     lateinit var evidenceSupplier: EvidenceSupplier
         private set
     lateinit var voiceVerifier: GmmUbmVoiceVerifier
