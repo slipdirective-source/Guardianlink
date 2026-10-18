@@ -62,22 +62,24 @@ class CommitSerializationTest {
         }
         val rig = testRig(verifiers = verifiers)
         val n = 8
+        // Build all evidence upfront, SEQUENTIALLY: the voice verifier's
+        // challenge state is per-instance, so concurrent issueChallenge
+        // calls would interfere. The concurrency under test is execute()
+        // alone.
+        val cases = (0 until n).map { i ->
+            val action = Action.Write("profile", mapOf("conc-$i" to "$i"))
+            action to testEvidence(action, rig.voice, actionId = "conc-$i")
+        }
         val start = CountDownLatch(1)
         val done = CountDownLatch(n)
         val results = Collections.synchronizedList(
             mutableListOf<ConciergeInterface.ExecutionResult>()
         )
-        repeat(n) { i ->
+        cases.forEach { (action, evidence) ->
             thread {
                 start.await()
                 try {
-                    val action = Action.Write("profile", mapOf("conc-$i" to "$i"))
-                    results.add(
-                        rig.concierge.execute(
-                            action,
-                            testEvidence(action, rig.voice, actionId = "conc-$i")
-                        )
-                    )
+                    results.add(rig.concierge.execute(action, evidence))
                 } finally {
                     done.countDown()
                 }
