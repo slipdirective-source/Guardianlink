@@ -4,6 +4,8 @@ import guardianlink.audit.AppendOnlyFileAnchor
 import guardianlink.audit.MerkleAuditLog
 import guardianlink.capability.CapabilityIssuer
 import guardianlink.capability.CapabilityPredicate
+import guardianlink.capability.LineageId
+import guardianlink.capability.SovereignRoot
 import guardianlink.capability.CheckResult
 import guardianlink.capability.EpochEffect
 import guardianlink.gates.Action

@@ -264,6 +264,7 @@ class CapabilityFalsificationTest {
             predicate: CapabilityPredicate,
             maxMutations: Long?,
             maxBytes: Long?,
+            ttlMs: Long = 60 * 60 * 1000L,
             allowOverlap: Boolean = false,
         ): EpochCapability {
             val lineageId = LineageId("test-l${lineageCounter++}-${java.util.UUID.randomUUID()}")
@@ -273,6 +274,7 @@ class CapabilityFalsificationTest {
                 predicate = predicate,
                 maxMutations = maxMutations,
                 maxBytes = maxBytes,
+                ttlMs = ttlMs,
                 allowOverlap = allowOverlap,
             )
         }
