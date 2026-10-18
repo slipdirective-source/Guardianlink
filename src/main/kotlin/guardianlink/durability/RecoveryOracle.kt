@@ -103,24 +103,26 @@ data class StoreState(
  * This is the reference semantics the checker simulates; the durable store
  * must agree with it on every prefix.
  */
-fun applyOpAtomically(state: StoreState, op: StoreOp): StoreState = when (op) {
-    is StoreOp.CommitMutation -> {
-        if (op.capId in state.consumed || op.capId in state.revoked) state
-        else state.copy(consumed = state.consumed + op.capId)
+fun applyOpAtomically(state: StoreState, op: StoreOp): StoreState {
+    return when (op) {
+        is StoreOp.CommitMutation -> {
+            if (op.capId in state.consumed || op.capId in state.revoked) state
+            else state.copy(consumed = state.consumed + op.capId)
+        }
+        is StoreOp.RecordUsage -> {
+            if (op.capId in state.revoked) return state
+            val (muts, bytes) = state.usage.getOrDefault(op.capId, 0L to 0L)
+            val newMuts = muts + 1
+            val newBytes = bytes + op.bytes
+            if (op.maxMutations != null && newMuts > op.maxMutations) return state
+            if (op.maxBytes != null && newBytes > op.maxBytes) return state
+            state.copy(usage = state.usage + (op.capId to (newMuts to newBytes)))
+        }
+        is StoreOp.Revoke ->
+            state.copy(revoked = state.revoked + op.capId)
+        is StoreOp.RevokeEpoch ->
+            state.copy(revokedEpochs = state.revokedEpochs + op.epoch)
     }
-    is StoreOp.RecordUsage -> {
-        if (op.capId in state.revoked) return state
-        val (muts, bytes) = state.usage.getOrDefault(op.capId, 0L to 0L)
-        val newMuts = muts + 1
-        val newBytes = bytes + op.bytes
-        if (op.maxMutations != null && newMuts > op.maxMutations) return state
-        if (op.maxBytes != null && newBytes > op.maxBytes) return state
-        state.copy(usage = state.usage + (op.capId to (newMuts to newBytes)))
-    }
-    is StoreOp.Revoke ->
-        state.copy(revoked = state.revoked + op.capId)
-    is StoreOp.RevokeEpoch ->
-        state.copy(revokedEpochs = state.revokedEpochs + op.epoch)
 }
 
 /** Simulate the atomic prefix history[0..k] (k operations). */

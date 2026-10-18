@@ -100,7 +100,7 @@ class DurableCapabilityStore(
      * (below) ensures a stalled holder that resumes after the world changed
      * cannot commit. Liveness vs safety: we choose safety.
      */
-    private fun <T> withStoreLock(block: () -> T): T {
+    private inline fun <T> withStoreLock(block: () -> T): T {
         localLock.lock()
         var raf: RandomAccessFile? = null
         var lock: FileLock? = null
