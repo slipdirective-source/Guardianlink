@@ -4,6 +4,8 @@ import guardianlink.audit.AppendOnlyFileAnchor
 import guardianlink.audit.MerkleAuditLog
 import guardianlink.capability.CapabilityIssuer
 import guardianlink.capability.CapabilityPredicate
+import guardianlink.capability.LineageId
+import guardianlink.capability.SovereignRoot
 import guardianlink.capability.CheckResult
 import guardianlink.capability.EpochEffect
 import guardianlink.gates.Action
@@ -98,9 +100,12 @@ class C1CompositionFalsificationTest {
 
     @Test
     fun `c1 - three mutations commit against epoch allowing two`() {
-        val iss = syncedIssuer()
+        val root = SovereignRoot.bootstrap()
+        val iss = CapabilityIssuer(clockMs = { 60_000L }, rootId = root.rootId)
         // Spec v2.1 authority boundary: epoch allows 2 mutations.
+        val lineageId = LineageId("c1-test-${java.util.UUID.randomUUID()}")
         val epochCap = iss.mintEpoch(
+            authority = root.newLineageAuthority(lineageId),
             predicate = CapabilityPredicate(
                 targetPrefix = "profile",
                 allowedTypes = setOf("write"),

@@ -63,6 +63,107 @@ class SecurityState {
  * checked against usage (WithinBounds), not against the effect.
  * A predicate that cannot be evaluated fails closed.
  */
+/**
+ * C-4 Sovereign Issuance: Identity separation.
+ *
+ * Three distinct identity types:
+ * - SovereignRootId: the persistent authority source. Stable across all epochs/lineages.
+ * - LineageId: a continuing constraint history. Stable across rotation. Exists to key
+ *   a future persistent counter; does NOT currently enforce cumulative constraints.
+ * - EpochId: a single epoch (one issuance, one local budget). Unique per mint.
+ *
+ * These are value classes for zero-overhead type safety. They prevent accidental
+ * confusion of identifiers at the type level.
+ */
+@JvmInline
+value class SovereignRootId(val value: String)
+
+@JvmInline
+value class LineageId(val value: String)
+
+/**
+ * C-4 Sovereign Issuance Authority.
+ *
+ * This is a distinct type from MutationCapability and EpochCapability. It represents
+ * the sovereign's authority to issue new epochs. It cannot be:
+ * - Constructed through the public capability API (private constructor)
+ * - Derived from a MutationCapability or EpochCapability (no conversion method exists)
+ * - Attenuated or delegated (no such operation)
+ * - Recovered from an epoch (epochs carry IDs, not issuance authority)
+ *
+ * Threat model: On the JVM, `internal` is public in bytecode and reflection can
+ * construct anything. This object-capability pattern prevents *accidental* holder
+ * access and makes the issuance boundary explicit in the type system. Against a
+ * reflective adversary, the mechanical guarantee requires a MAC/signature permit
+ * with the key outside the holder's address space (future work for cross-process).
+ *
+ * The authority is single-use: each `mintEpoch` consumes one authority object.
+ * This makes issuance an explicit, countable act, mirroring the consumable
+ * structure already used for mutation commits.
+ */
+class SovereignIssuanceAuthority private constructor(
+    val rootId: SovereignRootId,
+    val permitId: String,
+    val lineageId: LineageId?,
+    val newLineageId: LineageId?,
+) {
+    private var consumed = false
+
+    internal fun tryConsume(): Boolean {
+        if (consumed) return false
+        consumed = true
+        return true
+    }
+
+    companion object {
+        internal fun create(
+            rootId: SovereignRootId,
+            lineageId: LineageId?,
+            newLineageId: LineageId?,
+        ): SovereignIssuanceAuthority {
+            require((lineageId == null) != (newLineageId == null)) {
+                "Exactly one of lineageId (rotate) or newLineageId (new lineage) must be set"
+            }
+            return SovereignIssuanceAuthority(
+                rootId = rootId,
+                permitId = java.util.UUID.randomUUID().toString(),
+                lineageId = lineageId,
+                newLineageId = newLineageId,
+            )
+        }
+    }
+}
+
+/**
+ * The sovereign root: the persistent authority source.
+ *
+ * Created once via [bootstrap]. The root is NOT a consumable permit; it is the
+ * authority source from which single-use issuance authorities are derived.
+ */
+class SovereignRoot private constructor(
+    val rootId: SovereignRootId,
+) {
+    fun rotateAuthority(lineageId: LineageId): SovereignIssuanceAuthority =
+        SovereignIssuanceAuthority.create(
+            rootId = rootId,
+            lineageId = lineageId,
+            newLineageId = null,
+        )
+
+    fun newLineageAuthority(newLineageId: LineageId): SovereignIssuanceAuthority =
+        SovereignIssuanceAuthority.create(
+            rootId = rootId,
+            lineageId = null,
+            newLineageId = newLineageId,
+        )
+
+    companion object {
+        fun bootstrap(rootId: SovereignRootId = SovereignRootId(java.util.UUID.randomUUID().toString())): SovereignRoot =
+            SovereignRoot(rootId)
+    }
+}
+
+
 data class CapabilityPredicate(
     val targetPrefix: String?,
     val allowedTypes: Set<String>?,
@@ -127,6 +228,10 @@ data class EpochCapability(
     val maxBytes: Long?,
     /** Non-null iff derived by holder-autonomous attenuation. */
     val parentId: String?,
+    /** C-4: The sovereign root that authorized this epoch. */
+    val rootId: SovereignRootId,
+    /** C-4: The lineage this epoch belongs to. Stable across rotation. */
+    val lineageId: LineageId,
 ) {
     /**
      * Holder-autonomous attenuation (macaroon-style, §5): derive a strictly
@@ -192,6 +297,14 @@ open class CapabilityIssuer(
     val securityState: SecurityState = SecurityState(),
     private val maxMutationTtlMs: Long = 5 * 60 * 1000L,
     private val maxEpochTtlMs: Long = 60 * 60 * 1000L,
+    /**
+     * C-4: The sovereign root this issuer serves. Epochs minted by this issuer
+     * carry this rootId. The issuer refuses authorities from a different root.
+     * Defaults to a fresh random root for backward compatibility with tests
+     * that do not model sovereign setup; production should pass an explicit
+     * root from SovereignRoot.bootstrap().
+     */
+    val rootId: SovereignRootId = SovereignRootId(java.util.UUID.randomUUID().toString()),
 ) {
     private data class LiveRecord(
         val capability: Any, // MutationCapability | EpochCapability
@@ -205,6 +318,18 @@ open class CapabilityIssuer(
     private val revokedEpochs = ConcurrentHashMap.newKeySet<Long>()
     private var nextEpoch = 0L
     private val lock = Any()
+    /**
+     * C-4: Lineage IDs that have been established via NEW_LINEAGE issuance.
+     * Used to enforce uniqueness: a "new lineage" with a reused ID is a
+     * history-reset path and is refused.
+     */
+    private val usedLineageIds = ConcurrentHashMap.newKeySet<LineageId>()
+    /**
+     * C-4: Permit IDs that have been consumed. Enforces single-use issuance
+     * authorities. (In-memory; durable WAL integration is future work for
+     * cross-restart single-use.)
+     */
+    private val consumedPermitIds = ConcurrentHashMap.newKeySet<String>()
 
     fun mintMutation(
         mutationHash: String,
@@ -252,6 +377,13 @@ open class CapabilityIssuer(
     }
 
     fun mintEpoch(
+        /**
+         * C-4: Sovereign issuance authority. Must be a live, unconsumed authority
+         * object obtained from the SovereignRoot. This is what makes epoch creation
+         * structurally incapable of being reached by holders. The authority is
+         * consumed by this call (single-use).
+         */
+        authority: SovereignIssuanceAuthority,
         predicate: CapabilityPredicate,
         maxMutations: Long?,
         maxBytes: Long?,
@@ -261,13 +393,53 @@ open class CapabilityIssuer(
          * minting refuses when a live epoch already governs the same exact predicate.
          * Two live epochs over the same scope would provide additive budgets (2N),
          * a composition channel. Set true only when the overlap is explicitly
-         * authorized as additive by the sovereign issuance path.
+         * authorized as additive by the sovereign issuance path. Note: this flag
+         * alone does not authorize issuance; the SovereignIssuanceAuthority is
+         * still required. A holder cannot set allowOverlap=true to bypass the
+         * sovereign boundary.
          */
         allowOverlap: Boolean = false,
     ): EpochCapability {
         require(ttlMs in 1..maxEpochTtlMs) { "epoch TTL out of bounds" }
+        // C-4: Sovereign issuance verification. The authority must be from this root,
+        // must not already be consumed, and must specify exactly one of rotate/new-lineage.
+        require(authority.rootId == rootId) {
+            "C-4: issuance authority from different root (authority=${authority.rootId.value}, issuer=${rootId.value})"
+        }
         val now = clockMs()
-        val epoch = synchronized(lock) {
+        val (epoch, lineageId) = synchronized(lock) {
+            // Single-use: refuse if this permit was already consumed.
+            if (authority.permitId in consumedPermitIds) {
+                throw IllegalArgumentException(
+                    "C-4: issuance authority already consumed (permit=${authority.permitId})"
+                )
+            }
+            if (!authority.tryConsume()) {
+                throw IllegalArgumentException(
+                    "C-4: issuance authority already consumed (permit=${authority.permitId})"
+                )
+            }
+            consumedPermitIds.add(authority.permitId)
+
+            // Determine lineage: rotate uses existing, new-lineage establishes fresh.
+            val lid: LineageId = if (authority.lineageId != null) {
+                // ROTATE: lineage must already exist.
+                require(authority.lineageId in usedLineageIds) {
+                    "C-4: rotate to unknown lineage (${authority.lineageId.value}); " +
+                    "establish it first via newLineageAuthority"
+                }
+                authority.lineageId
+            } else {
+                // NEW_LINEAGE: ID must be fresh (durable uniqueness).
+                val newId = authority.newLineageId!!
+                require(newId !in usedLineageIds) {
+                    "C-4: lineage ID already exists (${newId.value}); " +
+                    "reusing it would be a history-reset path"
+                }
+                usedLineageIds.add(newId)
+                newId
+            }
+
             if (!allowOverlap) {
                 // C-4: prohibit concurrent epochs over the same exact scope.
                 // A live epoch is unrevoked, unexpired, and its epoch number not revoked.
@@ -285,7 +457,8 @@ open class CapabilityIssuer(
                     }
                 }
             }
-            nextEpoch++
+            val e = nextEpoch++
+            Pair(e, lid)
         }
         val cap = EpochCapability(
             id = UUID.randomUUID().toString(),
@@ -299,6 +472,8 @@ open class CapabilityIssuer(
             maxMutations = maxMutations,
             maxBytes = maxBytes,
             parentId = null,
+            rootId = rootId,
+            lineageId = lineageId,
         )
         live[cap.id] = LiveRecord(cap)
         return cap
