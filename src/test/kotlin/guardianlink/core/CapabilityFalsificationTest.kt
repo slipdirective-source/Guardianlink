@@ -38,7 +38,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlin.test.assertThrows
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import org.junit.jupiter.api.Test
 
@@ -576,7 +576,7 @@ class CapabilityFalsificationTest {
 
         // Second epoch with identical predicate while first is live: must refuse.
         // Two live epochs over the same scope would provide additive budgets.
-        val ex = assertThrows<IllegalArgumentException> {
+        val ex = assertFailsWith<IllegalArgumentException> {
             iss.mintEpoch(
                 predicate = predicate,
                 maxMutations = 2L, maxBytes = null,
