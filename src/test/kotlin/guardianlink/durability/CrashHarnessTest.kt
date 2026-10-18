@@ -51,7 +51,7 @@ class CrashHarnessTest {
     private fun runWithCrash(
         dir: File,
         point: CrashPoint,
-        ops: AttemptedHistory.(attempt: (StoreOp) -> Unit) -> Unit,
+        block: AttemptedHistory.(attempt: (StoreOp) -> Unit) -> Unit,
     ): Pair<AttemptedHistory, File> {
         val history = AttemptedHistory()
         val injector = CrashInjector(setOf(point))
@@ -82,7 +82,7 @@ class CrashHarnessTest {
             clock += 1_000L
         }
         try {
-            history.ops(ops, attempt)
+            history.block(attempt)
         } catch (_: CrashInjector.CrashInjected) {
             // Expected: the crash happened. Fall through to recovery.
         }
