@@ -77,6 +77,7 @@ class DurableCapabilityStore(
     private var state: StoreState = StoreState.EMPTY
     private var fencingEpoch: Long = 0L
     private var nextSeq: Long = 0L
+    private val consumedPermitIds = mutableSetOf<String>()
 
     private val localLock = ReentrantLock()
 
@@ -119,6 +120,29 @@ class DurableCapabilityStore(
 
     private fun appendLog(line: String) {
         logFile.appendText(line + "\n", Charsets.UTF_8)
+    }
+
+    /**
+     * Record a sovereign issuance permit as consumed (WAL-backed).
+     * The permitId survives crash/restart via WAL replay.
+     */
+    fun recordPermitConsumption(permitId: String): StoreResult = withStoreLock {
+        val seq = nextSeq++
+        val line = "$seq|$fencingEpoch|COMMIT|PERMIT_CONSUMED|$permitId"
+        appendLog(line)
+        crash.inject(CrashPoint.AFTER_COMMIT_WRITE)
+        fsyncLog()
+        crash.inject(CrashPoint.AFTER_COMMIT_FSYNC)
+        consumedPermitIds.add(permitId)
+        crash.inject(CrashPoint.AFTER_STATE_UPDATE)
+        StoreResult.Committed
+    }
+
+    /**
+     * Check if a permit has been consumed (from WAL-replayed state).
+     */
+    fun isPermitConsumed(permitId: String): Boolean = withStoreLock {
+        permitId in consumedPermitIds
     }
 
     private fun fsyncLog() {
