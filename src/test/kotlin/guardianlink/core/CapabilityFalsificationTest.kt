@@ -346,7 +346,14 @@ class CapabilityFalsificationTest {
     fun `revoked epoch kills every capability in it`() {
         val iss = epochIssuer()
         val cap1 = tunEpoch(iss)
-        val cap2 = tunEpoch(iss)
+        // C-4: second epoch with same predicate needs explicit overlap authorization.
+        // This test is about revocation semantics, not overlap prohibition.
+        val cap2 = iss.mintEpoch(
+            predicate = CapabilityPredicate("net/", setOf("tun-packet")),
+            maxMutations = 100L,
+            maxBytes = 1_000_000L,
+            allowOverlap = true,
+        )
         iss.revokeEpoch(cap1.epoch)
         assertEquals(cap1.epoch, cap2.epoch - 1)
         // cap2 is a different epoch: still live.
