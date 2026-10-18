@@ -90,6 +90,15 @@ class ConciergeInterface(
         val assentAudio: AudioSample,
         val intentVector: DoubleArray,
         val currentVector: DoubleArray,
+        /**
+         * Epoch binding (C-1): ID of the EpochCapability under which this
+         * mutation is authorized. The holder proposes; the issuer verifies
+         * (live, unrevoked, unexpired) and binds into the MutationCapability
+         * at mint time. The commit path derives from the authenticated
+         * binding — never trusts this field directly. Null = no epoch
+         * (no cumulative bound enforced).
+         */
+        val epochId: String? = null,
     )
 
     sealed interface ExecutionResult {
@@ -160,16 +169,61 @@ class ConciergeInterface(
                 // and the mint would make the fresh capability "not yet
                 // valid" — a TOCTOU race in the commit point itself.
                 val t_c = gates.clock.nowMs()
-                val cap = issuer.mintMutation(
-                    mutationHash = sha256Hex(evidence.rendering),
-                    notBeforeMs = t_c,
-                )
+                val cap = try {
+                    issuer.mintMutation(
+                        mutationHash = sha256Hex(evidence.rendering),
+                        notBeforeMs = t_c,
+                        epochId = evidence.epochId,
+                    )
+                } catch (e: IllegalArgumentException) {
+                    // Epoch binding invalid: fail closed, do not mint.
+                    return ExecutionResult.Rejected(
+                        -1, "epoch binding invalid at mint: ${e.message}"
+                    )
+                }
                 when (val c = issuer.checkAndConsumeMutation(cap, evidence.rendering, t_c)) {
                     is CheckResult.Refused ->
                         return ExecutionResult.Rejected(
                             -1, "capability refused at commit point: ${c.reason}"
                         )
                     CheckResult.Ok -> { /* the commit point is crossed */ }
+                }
+                // C-1: cumulative admission. Derive the epoch from the
+                // AUTHENTICATED binding (the MutationCapability minted by the
+                // issuer) — never from caller-supplied evidence. Every
+                // successful mutation under an epoch consumes/records against
+                // that epoch's aggregate bound. Fail closed if the epoch is
+                // unusable.
+                cap.epochId?.let { boundEpochId ->
+                    val epochEffect = guardianlink.capability.EpochEffect(
+                        target = when (val a = action) {
+                            is Action.Write -> a.recordId
+                            is Action.Read -> a.recordId
+                            is Action.Delete -> a.recordId
+                            else -> "unknown"
+                        },
+                        type = when (action) {
+                            is Action.Write -> "write"
+                            is Action.Read -> "read"
+                            is Action.Delete -> "delete"
+                            else -> "other"
+                        },
+                        bytes = evidence.rendering.toByteArray().size.toLong(),
+                    )
+                    // Look up the bound epoch from the issuer's live set.
+                    // The binding was verified at mint; re-verify liveness
+                    // here (revocation could have landed between mint and commit).
+                    val epochCap = issuer.liveEpoch(boundEpochId)
+                        ?: return ExecutionResult.Rejected(
+                            -1, "epoch binding unusable at commit: $boundEpochId"
+                        )
+                    when (val e = issuer.checkAndRecordEpoch(epochCap, epochEffect, t_c)) {
+                        is CheckResult.Refused ->
+                            return ExecutionResult.Rejected(
+                                -1, "epoch cumulative bound exceeded: ${e.reason}"
+                            )
+                        CheckResult.Ok -> { /* cumulative admission granted */ }
+                    }
                 }
                 substrate = outcome.newSubstrate
                 val receipt = anchor.anchor(

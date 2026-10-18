@@ -97,6 +97,16 @@ data class MutationCapability(
     val notAfterMs: Long,
     val stateDeps: Map<String, Long>,
     val issuerId: String,
+    /**
+     * Epoch binding (C-1): the ID of the EpochCapability under which this
+     * mutation was authorized, bound by the issuer at mint time. Null if
+     * the mutation was not authorized under an epoch (no cumulative bound).
+     * The commit path derives the epoch from this authenticated binding —
+     * never from caller-supplied evidence — and enforces the epoch's
+     * cumulative bound via checkAndRecordEpoch. Fail closed if the binding
+     * is absent when required, invalid, or unusable.
+     */
+    val epochId: String? = null,
 )
 
 /**
@@ -200,9 +210,34 @@ open class CapabilityIssuer(
         mutationHash: String,
         ttlMs: Long = maxMutationTtlMs,
         notBeforeMs: Long = clockMs(),
+        /**
+         * Epoch binding (C-1): ID of the EpochCapability under which this
+         * mutation is authorized. The issuer verifies the epoch is live,
+         * unrevoked, unexpired, and its epoch not revoked — then binds the
+         * ID into the MutationCapability. Fail closed (do not mint) if the
+         * epoch is unknown, revoked, expired, or otherwise unusable.
+         * Null = no epoch bound (no cumulative bound enforced).
+         */
+        epochId: String? = null,
     ): MutationCapability {
         require(ttlMs in 1..maxMutationTtlMs) { "mutation TTL out of bounds" }
         val now = clockMs()
+        // Verify the epoch binding BEFORE minting. This is the authorization-
+        // time establishment of the epoch relationship. The commit path will
+        // recover this binding from the minted capability — never by guessing.
+        if (epochId != null) {
+            val rec = synchronized(lock) { live[epochId] }
+                ?: throw IllegalArgumentException("epoch not minted by this issuer: $epochId")
+            if (rec.revoked) throw IllegalArgumentException("epoch revoked: $epochId")
+            val epochCap = rec.capability as? EpochCapability
+                ?: throw IllegalArgumentException("not an epoch capability: $epochId")
+            if (epochCap.epoch in synchronized(lock) { revokedEpochs }) {
+                throw IllegalArgumentException("epoch number revoked: $epochId")
+            }
+            if (now < epochCap.notBeforeMs || now >= epochCap.notAfterMs) {
+                throw IllegalArgumentException("epoch not currently valid: $epochId")
+            }
+        }
         val cap = MutationCapability(
             id = UUID.randomUUID().toString(),
             mutationHash = mutationHash,
@@ -210,6 +245,7 @@ open class CapabilityIssuer(
             notAfterMs = notBeforeMs + ttlMs,
             stateDeps = securityState.snapshot(),
             issuerId = issuerId,
+            epochId = epochId,
         )
         live[cap.id] = LiveRecord(cap)
         return cap
@@ -263,6 +299,22 @@ open class CapabilityIssuer(
         }
         rec.consumed = true
         return CheckResult.Ok
+    }
+
+    /**
+     * Look up a live EpochCapability by ID for the C-1 commit path.
+     * Returns null if unknown, revoked, or not an epoch capability.
+     * The caller (commit path) derives the ID from the authenticated
+     * MutationCapability binding — never from caller-supplied evidence.
+     */
+    fun liveEpoch(epochId: String): EpochCapability? = synchronized(lock) {
+        val rec = live[epochId] ?: return null
+        if (rec.revoked) return null
+        val cap = rec.capability as? EpochCapability ?: return null
+        if (cap.epoch in revokedEpochs) return null
+        val now = clockMs()
+        if (now < cap.notBeforeMs || now >= cap.notAfterMs) return null
+        cap
     }
 
     /**
