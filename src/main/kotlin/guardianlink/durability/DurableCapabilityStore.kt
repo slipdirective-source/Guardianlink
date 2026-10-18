@@ -228,6 +228,8 @@ class DurableCapabilityStore(
                 StoreOp.Revoke(seq, parts[4])
             "REVOKE_EPOCH" ->
                 StoreOp.RevokeEpoch(seq, parts[4].toLongOrNull() ?: return null)
+            "PERMIT_CONSUMED" ->
+                StoreOp.PermitConsumed(seq, parts[4])
             else -> null
         }
     }
