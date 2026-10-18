@@ -43,6 +43,8 @@ import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import org.junit.jupiter.api.Test
+import guardianlink.capability.SignedIssuancePermit
+import kotlin.test.assertFalse
 
 /**
  * Phase 2 falsification battery for the capability mechanism
