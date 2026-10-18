@@ -79,7 +79,7 @@ class CrashHarnessTest {
                     )
                 is StoreOp.Revoke -> store.revoke(seqOp.capId)
                 is StoreOp.RevokeEpoch -> {}
-                is StoreOp.PermitConsumed -> StoreOp.PermitConsumed(history.ops.size.toLong(), op.permitId)
+                is StoreOp.PermitConsumed -> store.recordPermitConsumption(seqOp.permitId)
             }
             clock += 1_000L
         }
