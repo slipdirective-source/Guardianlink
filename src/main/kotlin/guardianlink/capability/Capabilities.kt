@@ -412,6 +412,61 @@ open class CapabilityIssuer(
      */
     internal val signingKey: ByteArray? = null,
 ) {
+    /**
+     * Mint an epoch using a signed cross-process permit.
+     *
+     * Verifies the HMAC-SHA256 signature using the issuer's signing key.
+     * The permit must be from this root, must not have been consumed
+     * (checked via permitId against consumed set), and must specify
+     * exactly one of rotate/new-lineage.
+     *
+     * This enables sovereign issuance across process boundaries where
+     * object-capability identity does not survive serialization.
+     */
+    fun mintEpochWithPermit(
+        permit: SignedIssuancePermit,
+        predicate: CapabilityPredicate,
+        maxMutations: Long?,
+        maxBytes: Long?,
+        ttlMs: Long = maxEpochTtlMs,
+        allowOverlap: Boolean = false,
+    ): EpochCapability {
+        val key = signingKey ?: throw IllegalStateException(
+            "Cross-process permits not supported: issuer has no signing key"
+        )
+        require(SignedIssuancePermit.verify(permit, key)) {
+            "Invalid permit signature: permit not issued by this root"
+        }
+        require(permit.rootId == rootId.value) {
+            "Permit from different root (permit=${permit.rootId}, issuer=${rootId.value})"
+        }
+        // Check single-use via permitId
+        synchronized(lock) {
+            require(!consumedPermitIds.contains(permit.permitId)) {
+                "Permit already consumed: ${permit.permitId}"
+            }
+        }
+        // Convert to authority-like parameters and delegate to main mintEpoch logic
+        // by constructing a temporary authority object
+        val authority = SovereignIssuanceAuthority.create(
+            rootId = SovereignRootId(permit.rootId),
+            lineageId = permit.lineageId?.let { LineageId(it) },
+            newLineageId = permit.newLineageId?.let { LineageId(it) },
+        )
+        // Mark permit as consumed BEFORE minting (fail-closed on crash)
+        synchronized(lock) {
+            consumedPermitIds.add(permit.permitId)
+        }
+        return mintEpoch(
+            authority = authority,
+            predicate = predicate,
+            maxMutations = maxMutations,
+            maxBytes = maxBytes,
+            ttlMs = ttlMs,
+            allowOverlap = allowOverlap,
+        )
+    }
+
     private data class LiveRecord(
         val capability: Any, // MutationCapability | EpochCapability
         var consumed: Boolean = false,
