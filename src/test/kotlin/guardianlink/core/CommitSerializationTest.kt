@@ -27,7 +27,9 @@ class CommitSerializationTest {
     fun `sequential executes all seal`() {
         val rig = testRig()
         repeat(8) { i ->
-            val action = Action.Write("seq-$i", mapOf("v" to "$i"))
+            // Write to the existing "profile" record: Gate 6 psi_inv
+            // forbids creating records (the AST has no create node).
+            val action = Action.Write("profile", mapOf("seq-$i" to "$i"))
             val result = rig.concierge.execute(
                 action, testEvidence(action, rig.voice, actionId = "seq-$i")
             )
@@ -69,7 +71,7 @@ class CommitSerializationTest {
             thread {
                 start.await()
                 try {
-                    val action = Action.Write("conc-$i", mapOf("v" to "$i"))
+                    val action = Action.Write("profile", mapOf("conc-$i" to "$i"))
                     results.add(
                         rig.concierge.execute(
                             action,
@@ -83,17 +85,16 @@ class CommitSerializationTest {
         }
         start.countDown()
         assertTrue(done.await(60, TimeUnit.SECONDS), "executes did not finish")
-        val mc = maxConcurrent.get()
-        val execCount = results.filterIsInstance<ConciergeInterface.ExecutionResult.Executed>().size
-        if (mc != 1) {
-            error("DIAG applyCalls=${applyCalls.get()} maxConcurrent=$mc results=${results.size} executed=$execCount")
-        }
+        assertEquals(
+            1, maxConcurrent.get(),
+            "execute() overlapped inside the gates: applyCalls=${applyCalls.get()}"
+        )
         val executed = results.filterIsInstance<ConciergeInterface.ExecutionResult.Executed>()
         assertEquals(n, executed.size, "expected all $n executes to seal")
         // Every mutation landed exactly once.
-        val substrate = rig.concierge.currentSubstrate()
+        val profile = rig.concierge.currentSubstrate().records["profile"]
         repeat(n) { i ->
-            assertEquals("$i", substrate.records["conc-$i"]?.get("v"))
+            assertEquals("$i", profile?.get("conc-$i"))
         }
         // Ledger integrity survived concurrency.
         assertTrue(rig.gates.ledger.verifyIntegrity() < 0)
