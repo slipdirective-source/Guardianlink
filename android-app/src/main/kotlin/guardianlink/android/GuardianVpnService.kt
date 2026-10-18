@@ -87,7 +87,7 @@ class GuardianVpnService : VpnService() {
             val dst = "${buf[16].toInt() and 0xFF}.${buf[17].toInt() and 0xFF}" +
                 ".${buf[18].toInt() and 0xFF}.${buf[19].toInt() and 0xFF}"
             val packet = buf.copyOf(n)
-            if (!app::dispatcher.isInitialized) {
+            if (!app.isEngineReady() {
                 // Fail-closed: engine not up yet, packet cannot be
                 // governed, so it is dropped.
                 Log.w(TAG, "engine not initialized; packet dropped")
