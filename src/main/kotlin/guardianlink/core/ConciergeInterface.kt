@@ -2,6 +2,9 @@ package guardianlink.core
 
 import guardianlink.audit.ExternalAnchor
 import guardianlink.audit.MerkleAuditLog
+import guardianlink.capability.CapabilityIssuer
+import guardianlink.capability.CheckResult
+import guardianlink.capability.sha256Hex
 import guardianlink.gates.Action
 import guardianlink.gates.Assent
 import guardianlink.gates.GateContext
@@ -43,6 +46,15 @@ import kotlin.concurrent.withLock
  * enforces serialization itself instead of requiring it of embedders:
  * callers cannot reach the commit relation without serialization.
  * (Sole-authority-path, crash-consistency law.)
+ *
+ * Phase 2 (capabilities): on [GateOutcome.Integrated] the admission
+ * boundary mints a [guardianlink.capability.MutationCapability] binding
+ * this exact (actionId, rendering), and the commit point — substrate
+ * adoption — crosses ONLY on [CapabilityIssuer.checkAndConsumeMutation].
+ * No governed mutation commits without a currently valid capability
+ * minted by the admission boundary for that exact mutation. The issuer
+ * is injectable for falsification testing; the default is the engine's
+ * own admission boundary on the engine clock.
  */
 class ConciergeInterface(
     private val policyEngine: PolicyEngine,
@@ -50,6 +62,8 @@ class ConciergeInterface(
     private val gates: NineGates,
     private val anchor: ExternalAnchor,
     initialSubstrate: SubstrateState = SubstrateState(emptyMap()),
+    private val issuer: CapabilityIssuer =
+        CapabilityIssuer(clockMs = { gates.clock.nowMs() }),
 ) {
     data class Request(val tier: PolicyEngine.Tier, val hardRailRef: String?, val context: String)
     data class Response(val decision: PolicyEngine.EnforcementDecision, val auditEntryIndex: Int)
@@ -134,6 +148,29 @@ class ConciergeInterface(
         )
         return when (outcome) {
             is GateOutcome.Integrated -> {
+                // The sole authority path at the commit point: the admission
+                // boundary mints a mutation capability for this exact
+                // mutation, and substrate adoption crosses ONLY on a valid,
+                // live, unconsumed capability. Predicate-not-possession is
+                // structural here — the commit does not consult the gates'
+                // verdict directly, only the capability.
+                //
+                // notBeforeMs is bound to t_c (the commit instant), not to a
+                // second clock read: otherwise a clock tick between the read
+                // and the mint would make the fresh capability "not yet
+                // valid" — a TOCTOU race in the commit point itself.
+                val t_c = gates.clock.nowMs()
+                val cap = issuer.mintMutation(
+                    mutationHash = sha256Hex(evidence.rendering),
+                    notBeforeMs = t_c,
+                )
+                when (val c = issuer.checkAndConsumeMutation(cap, evidence.rendering, t_c)) {
+                    is CheckResult.Refused ->
+                        return ExecutionResult.Rejected(
+                            -1, "capability refused at commit point: ${c.reason}"
+                        )
+                    CheckResult.Ok -> { /* the commit point is crossed */ }
+                }
                 substrate = outcome.newSubstrate
                 val receipt = anchor.anchor(
                     root = outcome.sealRoot,
