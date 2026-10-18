@@ -157,9 +157,11 @@ class GovernedExecutionTest {
             rig.concierge.execute(write, testEvidence(write, rig.voice))
         )
         // Second action sees the first action's substrate — one governed
-        // state machine, not one shot per call.
+        // state machine, not one shot per call. Fresh actionId: assents are
+        // single-use, so the second authorized action carries its own id.
         val delete = Action.Delete("profile")
-        val result = rig.concierge.execute(delete, testEvidence(delete, rig.voice))
+        val result = rig.concierge.execute(
+            delete, testEvidence(delete, rig.voice, actionId = "test-2"))
         val executed = assertIs<ConciergeInterface.ExecutionResult.Executed>(result)
         assertTrue("profile" !in executed.newSubstrate.records)
         assertEquals(2, anchorLineCount(rig.anchorDir))

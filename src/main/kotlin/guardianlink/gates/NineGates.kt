@@ -121,6 +121,17 @@ class NineGates(
      * recursion, custom Error subclasses). Letting those escape would
      * bypass the halt ledger — the engine must halt, nothing escapes.
      */
+    /**
+     * ActionIds consumed by a sealed execution. An assent binds exactly one
+     * pending action: once the seal commits, the assent is consumed and the
+     * same actionId may never execute again through this engine instance.
+     * Without this, the exact replay of an authorized (action, evidence)
+     * pair would re-execute — one human assent mutating the substrate N
+     * times. The signature binding defeats forged and cross-action replay;
+     * this set defeats exact replay. Fresh authorizations use fresh actionIds.
+     */
+    private val sealedActionIds = mutableSetOf<String>()
+
     private inline fun <T> checked(block: () -> T): T? =
         try {
             block()
@@ -153,6 +164,13 @@ class NineGates(
     }
 
     fun evaluate(ctx: GateContext): GateOutcome {
+        // theta_assent consumption: an actionId sealed by this engine instance
+        // may not execute again. Checked before any gate so a replay never
+        // invokes adapters or touches the prepared-transition slot.
+        if (ctx.actionId in sealedActionIds) {
+            appendAudit("HALT gate=7 action=${ctx.actionId} reason=theta_assent: assent already consumed by a sealed execution")
+            return GateOutcome.Halted(7, "theta_assent: assent already consumed by a sealed execution")
+        }
         val prep = Prepared()
         // theta_assent_idle needs the ledger's last-append time as of ENTRY:
         // halt/seal records are appended during the run, so a live read
@@ -196,6 +214,7 @@ class NineGates(
             appendAudit("HALT gate=8 action=${ctx.actionId} reason=$reason")
             return GateOutcome.Halted(8, reason)
         }
+        sealedActionIds.add(ctx.actionId)
         appendAudit("SEAL action=${ctx.actionId} rendering=${ctx.rendering}")
         return GateOutcome.Integrated(newSubstrate, sealRoot = ledger.root)
     }
