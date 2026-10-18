@@ -7,9 +7,7 @@ import guardianlink.capability.CapabilityPredicate
 import guardianlink.capability.CheckResult
 import guardianlink.capability.EpochCapability
 import guardianlink.capability.LineageId
-import guardianlink.capability.SovereignIssuanceAuthority
 import guardianlink.capability.SovereignRoot
-import guardianlink.capability.SovereignRootId
 import guardianlink.capability.EpochEffect
 import guardianlink.capability.MutationCapability
 import guardianlink.capability.sha256Hex
@@ -245,20 +243,8 @@ class CapabilityFalsificationTest {
 
     // ---------- EpochCapability falsification ----------
 
-    private fun epochIssuer() = issuer()
-    private fun tunEpoch(iss: CapabilityIssuer) = fx.mintEpoch(
-        predicate = CapabilityPredicate(
-            targetPrefix = "net/",
-            allowedTypes = setOf("tun-packet"),
-        ),
-        maxMutations = 100L,
-        maxBytes = 1_000_000L,
-    )
     private fun packet(target: String, bytes: Long = 100L) =
         EpochEffect(target = target, type = "tun-packet", bytes = bytes)
-
-    @Test
-    fun `epoch effect within predicate commits`() {
 
     /**
      * C-4: Test fixture bundling a SovereignRoot with its bound issuer.
@@ -269,22 +255,18 @@ class CapabilityFalsificationTest {
         val root: SovereignRoot = SovereignRoot.bootstrap(),
     ) {
         val issuer: CapabilityIssuer = CapabilityIssuer(
-            clockMs = { nowMs },
+            clockMs = { 60_000L },
             rootId = root.rootId,
         )
         private var lineageCounter = 0
 
-        /**
-         * Mints an epoch via proper sovereign issuance: new lineage authority
-         * for each mint (test isolation). For rotate tests, use [rotateEpoch].
-         */
         fun mintEpoch(
             predicate: CapabilityPredicate,
             maxMutations: Long?,
             maxBytes: Long?,
             allowOverlap: Boolean = false,
         ): EpochCapability {
-            val lineageId = LineageId("test-lineage-${lineageCounter++}-${java.util.UUID.randomUUID()}")
+            val lineageId = LineageId("test-l${lineageCounter++}-${java.util.UUID.randomUUID()}")
             val authority = root.newLineageAuthority(lineageId)
             return issuer.mintEpoch(
                 authority = authority,
@@ -295,31 +277,19 @@ class CapabilityFalsificationTest {
             )
         }
 
-        /**
-         * Mints an epoch by rotating an existing lineage (same LineageId).
-         */
-        fun rotateEpoch(
-            lineageId: LineageId,
-            predicate: CapabilityPredicate,
-            maxMutations: Long?,
-            maxBytes: Long?,
-            allowOverlap: Boolean = false,
-        ): EpochCapability {
-            val authority = root.rotateAuthority(lineageId)
-            return issuer.mintEpoch(
-                authority = authority,
-                predicate = predicate,
-                maxMutations = maxMutations,
-                maxBytes = maxBytes,
-                allowOverlap = allowOverlap,
-            )
-        }
+        fun tunEpoch(): EpochCapability = mintEpoch(
+            predicate = CapabilityPredicate("net/", setOf("tun-packet")),
+            maxMutations = 100L,
+            maxBytes = 1_000_000L,
+        )
     }
 
     private fun sovereignFixture() = SovereignFixture()
 
+    @Test
+    fun `epoch effect within predicate commits`() {
         val fx = sovereignFixture()
-        val cap = tunEpoch(iss)
+        val cap = fx.tunEpoch()
         val r = fx.issuer.checkAndRecordEpoch(cap, packet("net/10.0.0.1"), nowMs)
         assertIs<CheckResult.Ok>(r, "in-predicate effect refused: $r")
         assertEquals(1L to 100L, fx.issuer.usageOf(cap.id))
@@ -328,7 +298,7 @@ class CapabilityFalsificationTest {
     @Test
     fun `epoch effect outside target prefix refuses`() {
         val fx = sovereignFixture()
-        val cap = tunEpoch(iss)
+        val cap = fx.tunEpoch()
         val r = fx.issuer.checkAndRecordEpoch(cap, packet("disk/secret"), nowMs)
         assertTrue(
             refusedReason(r).contains("predicate"),
@@ -339,7 +309,7 @@ class CapabilityFalsificationTest {
     @Test
     fun `epoch effect of disallowed type refuses`() {
         val fx = sovereignFixture()
-        val cap = tunEpoch(iss)
+        val cap = fx.tunEpoch()
         val r = fx.issuer.checkAndRecordEpoch(
             cap, EpochEffect("net/10.0.0.1", "raw-socket", 100L), nowMs
         )
@@ -399,7 +369,7 @@ class CapabilityFalsificationTest {
     @Test
     fun `revoked epoch capability refuses while ttl live`() {
         val fx = sovereignFixture()
-        val cap = tunEpoch(iss)
+        val cap = fx.tunEpoch()
         iss.revoke(cap.id) // TTL still live: revocation ≠ expiry
         val r = fx.issuer.checkAndRecordEpoch(cap, packet("net/1"), nowMs)
         assertTrue(refusedReason(r).contains("revoked"), "revoked epoch accepted: $r")
@@ -408,7 +378,7 @@ class CapabilityFalsificationTest {
     @Test
     fun `revoked epoch kills every capability in it`() {
         val fx = sovereignFixture()
-        val cap1 = tunEpoch(iss)
+        val cap1 = fx.tunEpoch()
         // C-4: second epoch with same predicate needs explicit overlap authorization.
         // This test is about revocation semantics, not overlap prohibition.
         val cap2 = fx.mintEpoch(
@@ -431,7 +401,7 @@ class CapabilityFalsificationTest {
     @Test
     fun `attenuation cannot widen the predicate`() {
         val fx = sovereignFixture()
-        val parent = tunEpoch(iss)
+        val parent = fx.tunEpoch()
         // Wider prefix.
         assertNull(
             parent.attenuateTo(CapabilityPredicate(null, setOf("tun-packet"))),
@@ -453,7 +423,7 @@ class CapabilityFalsificationTest {
     @Test
     fun `attenuation cannot extend lifetime`() {
         val fx = sovereignFixture()
-        val parent = tunEpoch(iss)
+        val parent = fx.tunEpoch()
         assertNull(
             parent.attenuateTo(
                 CapabilityPredicate("net/10.0.0.0/8", setOf("tun-packet")),
@@ -473,7 +443,7 @@ class CapabilityFalsificationTest {
     @Test
     fun `attenuation cannot raise bounds`() {
         val fx = sovereignFixture()
-        val parent = tunEpoch(iss) // maxMutations=100
+        val parent = fx.tunEpoch() // maxMutations=100
         assertNull(
             parent.attenuateTo(
                 CapabilityPredicate("net/", setOf("tun-packet")),
@@ -493,7 +463,7 @@ class CapabilityFalsificationTest {
     @Test
     fun `attenuated child enforces the narrowed predicate`() {
         val fx = sovereignFixture()
-        val parent = tunEpoch(iss)
+        val parent = fx.tunEpoch()
         // Note: predicates are STRING prefixes, not CIDR. "net/10." is a
         // string-narrowing of "net/".
         val child = parent.attenuateTo(
@@ -702,10 +672,7 @@ class CapabilityFalsificationTest {
 
     @Test
     fun `sovereign 1 holder cannot issue an epoch`() {
-        // Possession of a live MutationCapability must not provide any path
-        // to create an EpochCapability. There is no API from capability to authority.
         val fx = sovereignFixture()
-        val lineageId = LineageId("test-l1-${java.util.UUID.randomUUID()}")
         val epoch = fx.mintEpoch(
             predicate = CapabilityPredicate("net/", setOf("tun-packet")),
             maxMutations = 2L, maxBytes = null,
@@ -714,95 +681,61 @@ class CapabilityFalsificationTest {
             mutationHash = sha256Hex("test".toByteArray()),
             epochId = epoch.id,
         )
-        // Attempt: use the MutationCapability to derive issuance authority.
-        // There is no such method. This test documents the absence.
+        // No API exists from MutationCapability to SovereignIssuanceAuthority.
         // If a future API adds such a path, this test must be updated to attack it.
-        assertTrue(true, "No API exists from MutationCapability to SovereignIssuanceAuthority")
+        assertTrue(true, "No API from MutationCapability to SovereignIssuanceAuthority")
     }
 
     @Test
     fun `sovereign 2 epoch holder cannot issue another epoch`() {
-        // An EpochCapability, even maximally permissive, must not confer
-        // or derive sovereign issuance authority.
         val fx = sovereignFixture()
         val epoch = fx.mintEpoch(
-            predicate = CapabilityPredicate(null, null), // maximally permissive
+            predicate = CapabilityPredicate(null, null),
             maxMutations = null, maxBytes = null,
         )
-        // Attempt: use the EpochCapability as authority. The types are distinct;
         // mintEpoch requires SovereignIssuanceAuthority, not EpochCapability.
-        // This is enforced by the Kotlin type system.
-        assertTrue(true, "EpochCapability is not a SovereignIssuanceAuthority (type system)")
+        // Enforced by the Kotlin type system.
+        assertTrue(true, "EpochCapability is not SovereignIssuanceAuthority (types)")
     }
 
     @Test
     fun `sovereign 3 attenuation cannot create issuance authority`() {
-        // No attenuation sequence may transform mutation/epoch authority
-        // into SovereignIssuanceAuthority.
         val fx = sovereignFixture()
         val epoch = fx.mintEpoch(
             predicate = CapabilityPredicate("net/", setOf("tun-packet")),
             maxMutations = 10L, maxBytes = 1000L,
         )
-        // Attenuate the epoch (narrow it)
         val attenuated = epoch.attenuateTo(
             CapabilityPredicate("net/sub/", setOf("tun-packet"))
         )
         assertNotNull(attenuated, "attenuation should succeed for narrowing")
-        // The attenuated capability is still an EpochCapability, not an authority.
-        // There is no method to convert EpochCapability -> SovereignIssuanceAuthority.
-        assertTrue(true, "Attenuation produces EpochCapability, never SovereignIssuanceAuthority")
+        // Attenuation produces EpochCapability, never SovereignIssuanceAuthority.
+        assertTrue(true, "No conversion from EpochCapability to authority")
     }
 
     @Test
     fun `sovereign 4 delegation composition cannot launder issuance authority`() {
-        // Chaining holder-accessible APIs must not produce sovereign issuance.
-        // Holder APIs: attenuateTo, checkAndRecordEpoch, checkAndConsumeMutation.
-        // None return or accept SovereignIssuanceAuthority.
         val fx = sovereignFixture()
         val epoch = fx.mintEpoch(
             predicate = CapabilityPredicate("net/", setOf("tun-packet")),
             maxMutations = 5L, maxBytes = null,
         )
-        // Chain: attenuate -> checkAndRecord -> attenuate again
         val att1 = epoch.attenuateTo(CapabilityPredicate("net/a/", setOf("tun-packet")))
         assertNotNull(att1)
         val att2 = att1!!.attenuateTo(CapabilityPredicate("net/a/b/", setOf("tun-packet")))
         assertNotNull(att2)
-        // At no point does an issuance authority appear.
         assertTrue(true, "Holder API chain never yields SovereignIssuanceAuthority")
     }
 
     @Test
     fun `sovereign 5 expiry does not automatically refresh authority`() {
-        // Expiration of an epoch must not cause issuance of a replacement
-        // or a fresh budget without a new sovereign act.
-        val root = SovereignRoot.bootstrap()
-        val issuer = CapabilityIssuer(
-            clockMs = { 60_000L },
-            rootId = root.rootId,
-        )
-        val lineageId = LineageId("expire-test-${java.util.UUID.randomUUID()}")
-        val auth = root.newLineageAuthority(lineageId)
-        val epoch = issuer.mintEpoch(
-            authority = auth,
-            predicate = CapabilityPredicate("net/", setOf("tun-packet")),
-            maxMutations = 1L, maxBytes = null,
-            ttlMs = 1000L, // 1 second TTL
-        )
-        // Simulate time passing beyond expiry (issuer clock is fixed, so we
-        // verify the epoch is expired by checking liveEpoch returns null
-        // when now >= notAfterMs; here we just verify no auto-renewal happened)
-        // The key property: no new epoch appears in `live` without sovereign action.
-        val liveCountBefore = 1 // we minted one
-        // Advance time conceptually: no API exists for automatic renewal.
-        assertTrue(true, "No automatic renewal API exists; expiry requires sovereign re-issuance")
+        // No API exists for automatic renewal on expiry.
+        // Expiry requires a new sovereign act (new authority from root).
+        assertTrue(true, "No automatic renewal; expiry requires sovereign re-issuance")
     }
 
     @Test
     fun `sovereign 6 revocation does not enable reset and reissue`() {
-        // A holder must not be able to revoke/rotate/replace an epoch to obtain
-        // a fresh local budget. Reissue requires a NEW sovereign authority.
         val fx = sovereignFixture()
         val lineageId = LineageId("revoke-test-${java.util.UUID.randomUUID()}")
         val auth1 = fx.root.newLineageAuthority(lineageId)
@@ -811,159 +744,104 @@ class CapabilityFalsificationTest {
             predicate = CapabilityPredicate("net/", setOf("tun-packet")),
             maxMutations = 1L, maxBytes = null,
         )
-        // Exhaust the epoch
         assertIs<CheckResult.Ok>(fx.issuer.checkAndRecordEpoch(epoch1, packet("net/1"), nowMs))
         val exhausted = fx.issuer.checkAndRecordEpoch(epoch1, packet("net/2"), nowMs)
         assertTrue(refusedReason(exhausted).contains("mutation bound"))
-
-        // Revoke it
         fx.issuer.revokeEpoch(epoch1.epoch)
-
-        // Attempt: mint a replacement WITHOUT a new sovereign authority.
-        // This must fail because mintEpoch requires the authority parameter.
-        // (Compile-time: cannot call mintEpoch without authority.)
-        // Attempt: reuse the consumed authority.
+        // Reusing the consumed authority must fail.
         val ex = assertFailsWith<IllegalArgumentException> {
             fx.issuer.mintEpoch(
-                authority = auth1, // already consumed!
+                authority = auth1,
                 predicate = CapabilityPredicate("net/", setOf("tun-packet")),
                 maxMutations = 1L, maxBytes = null,
             )
         }
-        assertTrue(
-            ex.message!!.contains("already consumed"),
-            "Consumed authority cannot be reused: ${ex.message}"
-        )
+        assertTrue(ex.message!!.contains("already consumed"))
     }
 
     @Test
     fun `sovereign 7 concurrent overlapping epochs are independently bounded`() {
-        // Two simultaneously live epochs (explicitly authorized overlap) must each
-        // be charged according to the epoch bound at commit time. No accounting escape.
         val fx = sovereignFixture()
         val pred = CapabilityPredicate("net/", setOf("tun-packet"))
-
-        val lineage1 = LineageId("concurrent-1-${java.util.UUID.randomUUID()}")
-        val lineage2 = LineageId("concurrent-2-${java.util.UUID.randomUUID()}")
-
+        val lineage1 = LineageId("conc-1-${java.util.UUID.randomUUID()}")
+        val lineage2 = LineageId("conc-2-${java.util.UUID.randomUUID()}")
         val epoch1 = fx.issuer.mintEpoch(
             authority = fx.root.newLineageAuthority(lineage1),
-            predicate = pred,
-            maxMutations = 2L, maxBytes = null,
-            allowOverlap = true, // explicitly authorized
+            predicate = pred, maxMutations = 2L, maxBytes = null,
+            allowOverlap = true,
         )
         val epoch2 = fx.issuer.mintEpoch(
             authority = fx.root.newLineageAuthority(lineage2),
-            predicate = pred,
-            maxMutations = 2L, maxBytes = null,
-            allowOverlap = true, // explicitly authorized
+            predicate = pred, maxMutations = 2L, maxBytes = null,
+            allowOverlap = true,
         )
-
-        // Each epoch enforces its own bound independently.
         assertIs<CheckResult.Ok>(fx.issuer.checkAndRecordEpoch(epoch1, packet("net/1"), nowMs))
         assertIs<CheckResult.Ok>(fx.issuer.checkAndRecordEpoch(epoch1, packet("net/2"), nowMs))
-        val epoch1Third = fx.issuer.checkAndRecordEpoch(epoch1, packet("net/3"), nowMs)
-        assertTrue(refusedReason(epoch1Third).contains("mutation bound"))
-
-        // Epoch 2 still has its full budget (independent).
+        val e1t = fx.issuer.checkAndRecordEpoch(epoch1, packet("net/3"), nowMs)
+        assertTrue(refusedReason(e1t).contains("mutation bound"))
         assertIs<CheckResult.Ok>(fx.issuer.checkAndRecordEpoch(epoch2, packet("net/1"), nowMs))
         assertIs<CheckResult.Ok>(fx.issuer.checkAndRecordEpoch(epoch2, packet("net/2"), nowMs))
-        val epoch2Third = fx.issuer.checkAndRecordEpoch(epoch2, packet("net/3"), nowMs)
-        assertTrue(refusedReason(epoch2Third).contains("mutation bound"))
+        val e2t = fx.issuer.checkAndRecordEpoch(epoch2, packet("net/3"), nowMs)
+        assertTrue(refusedReason(e2t).contains("mutation bound"))
     }
 
     @Test
     fun `sovereign 8 rotation preserves lineage identity`() {
-        // Sovereign rotation must produce a new EpochId while retaining the same
-        // LineageId and SovereignRootId. Distinguishable from new lineage creation.
         val fx = sovereignFixture()
-        val lineageId = LineageId("rotate-test-${java.util.UUID.randomUUID()}")
+        val lineageId = LineageId("rot-${java.util.UUID.randomUUID()}")
         val pred = CapabilityPredicate("net/", setOf("tun-packet"))
-
         val epoch1 = fx.issuer.mintEpoch(
             authority = fx.root.newLineageAuthority(lineageId),
-            predicate = pred,
-            maxMutations = 2L, maxBytes = null,
+            predicate = pred, maxMutations = 2L, maxBytes = null,
         )
-        // Revoke first to avoid overlap (different test focus)
         fx.issuer.revokeEpoch(epoch1.epoch)
-
         val epoch2 = fx.issuer.mintEpoch(
             authority = fx.root.rotateAuthority(lineageId),
-            predicate = pred,
-            maxMutations = 2L, maxBytes = null,
+            predicate = pred, maxMutations = 2L, maxBytes = null,
         )
-
-        // Different epoch IDs, same lineage and root.
-        assertTrue(epoch1.id != epoch2.id, "Rotation produces new EpochId")
-        assertEquals(lineageId, epoch2.lineageId, "Rotation preserves LineageId")
-        assertEquals(epoch1.lineageId, epoch2.lineageId, "Both epochs share lineage")
-        assertEquals(fx.root.rootId, epoch2.rootId, "Rotation preserves SovereignRootId")
+        assertTrue(epoch1.id != epoch2.id, "New EpochId")
+        assertEquals(lineageId, epoch2.lineageId, "Preserves LineageId")
+        assertEquals(epoch1.lineageId, epoch2.lineageId, "Same lineage")
+        assertEquals(fx.root.rootId, epoch2.rootId, "Preserves RootId")
     }
 
     @Test
     fun `sovereign 9 new lineage requires sovereign authority`() {
-        // No holder-controlled operation may select or manufacture a new LineageId.
-        // Creating a new lineage requires the sovereign issuance boundary.
         val fx = sovereignFixture()
         val pred = CapabilityPredicate("net/", setOf("tun-packet"))
-
-        // Attempt: holder tries to mint with a self-chosen lineage ID but without
-        // going through root.newLineageAuthority. This is impossible because
-        // mintEpoch requires a SovereignIssuanceAuthority, which only the root
-        // can create. The LineageId in the authority is set by the root, not the holder.
-        val lineageId = LineageId("holder-chosen-${java.util.UUID.randomUUID()}")
-        // The holder cannot create an authority; only root.newLineageAuthority can.
-        // This test documents that the API shape prevents holder-chosen lineages
-        // from reaching mintEpoch without sovereign involvement.
+        val lineageId = LineageId("new-${java.util.UUID.randomUUID()}")
+        // Only root.newLineageAuthority can create the authority.
+        // Holder cannot manufacture it.
         val authority = fx.root.newLineageAuthority(lineageId)
         val epoch = fx.issuer.mintEpoch(
             authority = authority,
-            predicate = pred,
-            maxMutations = 2L, maxBytes = null,
+            predicate = pred, maxMutations = 2L, maxBytes = null,
         )
         assertEquals(lineageId, epoch.lineageId)
-        // The lineage was sovereign-authorized, not holder-manufactured.
-        assertTrue(true, "Lineage creation went through sovereign root")
     }
 
     @Test
     fun `sovereign 10 fresh sovereign issuance gets fresh local budget`() {
-        // CHARACTERIZATION (not adversarial): A genuinely sovereign-authorized
-        // issuance of a new epoch receives its specified fresh epoch-local budget.
-        // This prevents C-4 from accidentally becoming undeclared cumulative
-        // cross-epoch enforcement. Tests 1-9 establish who CANNOT cause reset;
-        // this test establishes what C-4 DOES permit.
+        // CHARACTERIZATION: Fresh sovereign issuance receives fresh budget.
+        // Tests 1-9 establish who CANNOT cause reset; this establishes what C-4 permits.
         val fx = sovereignFixture()
         val pred = CapabilityPredicate("net/", setOf("tun-packet"))
-        val lineageId = LineageId("char-test-${java.util.UUID.randomUUID()}")
-
-        // First epoch: exhaust budget of 2.
+        val lineageId = LineageId("char-${java.util.UUID.randomUUID()}")
         val epoch1 = fx.issuer.mintEpoch(
             authority = fx.root.newLineageAuthority(lineageId),
-            predicate = pred,
-            maxMutations = 2L, maxBytes = null,
+            predicate = pred, maxMutations = 2L, maxBytes = null,
         )
         assertIs<CheckResult.Ok>(fx.issuer.checkAndRecordEpoch(epoch1, packet("net/1"), nowMs))
         assertIs<CheckResult.Ok>(fx.issuer.checkAndRecordEpoch(epoch1, packet("net/2"), nowMs))
-
         fx.issuer.revokeEpoch(epoch1.epoch)
-
-        // Second epoch via sovereign ROTATION: fresh budget of 2.
-        // This is INTENTIONAL per C-4. It does NOT imply lineage safety.
         val epoch2 = fx.issuer.mintEpoch(
             authority = fx.root.rotateAuthority(lineageId),
-            predicate = pred,
-            maxMutations = 2L, maxBytes = null,
+            predicate = pred, maxMutations = 2L, maxBytes = null,
         )
         assertIs<CheckResult.Ok>(fx.issuer.checkAndRecordEpoch(epoch2, packet("net/1"), nowMs))
         assertIs<CheckResult.Ok>(fx.issuer.checkAndRecordEpoch(epoch2, packet("net/2"), nowMs))
         val third = fx.issuer.checkAndRecordEpoch(epoch2, packet("net/3"), nowMs)
-        assertTrue(
-            refusedReason(third).contains("mutation bound"),
-            "Rotated epoch enforces its own local bound"
-        )
-        // Both epochs share lineage (rotation, not new lineage).
+        assertTrue(refusedReason(third).contains("mutation bound"))
         assertEquals(epoch1.lineageId, epoch2.lineageId)
     }
 }
