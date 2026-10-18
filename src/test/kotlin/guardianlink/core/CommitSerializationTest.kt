@@ -95,7 +95,6 @@ class CommitSerializationTest {
     }
 
     @Test
-    @Test
     fun `concurrent executes never overlap inside the gates`() {
         val concurrentEntries = AtomicInteger(0)
         val maxConcurrent = AtomicInteger(0)
