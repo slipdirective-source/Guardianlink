@@ -103,7 +103,7 @@ class C1CompositionFalsificationTest {
         val epochCap = iss.mintEpoch(
             predicate = CapabilityPredicate(
                 targetPrefix = "profile",
-                allowedTypes = setOf("test.write"),
+                allowedTypes = setOf("write"),
             ),
             maxMutations = 2L,
             maxBytes = 1_000_000L,
