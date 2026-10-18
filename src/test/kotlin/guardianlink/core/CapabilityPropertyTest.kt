@@ -5,6 +5,9 @@ import guardianlink.capability.CapabilityPredicate
 import guardianlink.capability.CheckResult
 import guardianlink.capability.EpochEffect
 import guardianlink.capability.sha256Hex
+import guardianlink.capability.EpochCapability
+import guardianlink.capability.LineageId
+import guardianlink.capability.SovereignRoot
 import kotlin.random.Random
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
