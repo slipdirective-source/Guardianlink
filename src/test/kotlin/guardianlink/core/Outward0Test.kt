@@ -44,7 +44,7 @@ class Outward0Test {
             )
         }
 
-        fun holderCli(): HolderCli = HolderCli(issuer, clockMs = { nowMs })
+        fun holderCli(): HolderCli = HolderCli(issuer, clockMs = { 60_000L })
     }
 
     // O0-1: SOVEREIGN COMMAND ABSENCE
