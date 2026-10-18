@@ -184,30 +184,26 @@ class DurableCapabilityStore(
 
     private fun parseOp(seq: Long, parts: List<String>): StoreOp? {
         // Format: seq|epoch|COMMIT|OP_TYPE|params...
+        // parts[0]=seq, parts[1]=epoch, parts[2]=COMMIT, parts[3]=OP_TYPE,
+        // parts[4..]=params.
         if (parts.size < 5) return null
         return when (parts[3]) {
-            "COMMIT_MUTATION" -> {
-                if (parts.size < 6) return null
-                StoreOp.CommitMutation(seq, parts[5])
-            }
+            "COMMIT_MUTATION" ->
+                StoreOp.CommitMutation(seq, parts[4])
             "RECORD_USAGE" -> {
-                if (parts.size < 9) return null
+                if (parts.size < 8) return null
                 StoreOp.RecordUsage(
                     seq,
-                    parts[5],
-                    parts[6].toLongOrNull() ?: return null,
+                    parts[4],
+                    parts[5].toLongOrNull() ?: return null,
+                    parts[6].toLongOrNull(),
                     parts[7].toLongOrNull(),
-                    parts[8].toLongOrNull(),
                 )
             }
-            "REVOKE" -> {
-                if (parts.size < 6) return null
-                StoreOp.Revoke(seq, parts[5])
-            }
-            "REVOKE_EPOCH" -> {
-                if (parts.size < 6) return null
-                StoreOp.RevokeEpoch(seq, parts[5].toLongOrNull() ?: return null)
-            }
+            "REVOKE" ->
+                StoreOp.Revoke(seq, parts[4])
+            "REVOKE_EPOCH" ->
+                StoreOp.RevokeEpoch(seq, parts[4].toLongOrNull() ?: return null)
             else -> null
         }
     }

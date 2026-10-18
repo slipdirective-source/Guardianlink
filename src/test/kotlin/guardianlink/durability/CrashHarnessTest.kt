@@ -29,49 +29,60 @@ class CrashHarnessTest {
 
     /** Attempted history, tracked by the harness for the oracle. */
     private class AttemptedHistory {
-        private var seq = 0L
         val ops = mutableListOf<StoreOp>()
+        private fun nextSeq(): Long = ops.size.toLong()
         fun commitMutation(capId: String) {
-            ops.add(StoreOp.CommitMutation(seq++, capId))
+            ops.add(StoreOp.CommitMutation(nextSeq(), capId))
         }
         fun recordUsage(capId: String, bytes: Long, maxM: Long?, maxB: Long?) {
-            ops.add(StoreOp.RecordUsage(seq++, capId, bytes, maxM, maxB))
+            ops.add(StoreOp.RecordUsage(nextSeq(), capId, bytes, maxM, maxB))
         }
         fun revoke(capId: String) {
-            ops.add(StoreOp.Revoke(seq++, capId))
+            ops.add(StoreOp.Revoke(nextSeq(), capId))
         }
     }
 
     /**
-     * Run operations with crash injection at [point]. Returns the attempted
-     * history and the directory (for recovery).
+     * Run operations with crash injection at [point]. The [ops] lambda
+     * receives the history tracker and a function to attempt an operation;
+     * only operations actually attempted (before the crash) are recorded.
+     * Returns the attempted history and the directory (for recovery).
      */
     private fun runWithCrash(
         dir: File,
         point: CrashPoint,
-        ops: AttemptedHistory.() -> Unit,
+        ops: AttemptedHistory.(attempt: (StoreOp) -> Unit) -> Unit,
     ): Pair<AttemptedHistory, File> {
         val history = AttemptedHistory()
         val injector = CrashInjector(setOf(point))
         var clock = 1_000_000L
         val store = DurableCapabilityStore(dir, clockMs = { clock }, crash = injector)
-        history.ops()
-        // Replay the history against the store, catching the injected crash.
-        try {
-            for (op in history.ops) {
-                when (op) {
-                    is StoreOp.CommitMutation ->
-                        store.commitMutation(op.capId, notAfterMs = Long.MAX_VALUE)
-                    is StoreOp.RecordUsage ->
-                        store.recordUsage(
-                            op.capId, op.bytes, op.maxMutations, op.maxBytes,
-                            notAfterMs = Long.MAX_VALUE,
-                        )
-                    is StoreOp.Revoke -> store.revoke(op.capId)
-                    is StoreOp.RevokeEpoch -> {}
-                }
-                clock += 1_000L
+        // Attempt function: records the op in history, then executes it.
+        // If the crash fires, the op is recorded (it was attempted) and we stop.
+        val attempt: (StoreOp) -> Unit = { op ->
+            // Record with a harness-assigned seq (order is what matters).
+            val seqOp = when (op) {
+                is StoreOp.CommitMutation -> StoreOp.CommitMutation(history.ops.size.toLong(), op.capId)
+                is StoreOp.RecordUsage -> StoreOp.RecordUsage(history.ops.size.toLong(), op.capId, op.bytes, op.maxMutations, op.maxBytes)
+                is StoreOp.Revoke -> StoreOp.Revoke(history.ops.size.toLong(), op.capId)
+                is StoreOp.RevokeEpoch -> StoreOp.RevokeEpoch(history.ops.size.toLong(), op.epoch)
             }
+            history.ops.add(seqOp)
+            when (seqOp) {
+                is StoreOp.CommitMutation ->
+                    store.commitMutation(seqOp.capId, notAfterMs = Long.MAX_VALUE)
+                is StoreOp.RecordUsage ->
+                    store.recordUsage(
+                        seqOp.capId, seqOp.bytes, seqOp.maxMutations, seqOp.maxBytes,
+                        notAfterMs = Long.MAX_VALUE,
+                    )
+                is StoreOp.Revoke -> store.revoke(seqOp.capId)
+                is StoreOp.RevokeEpoch -> {}
+            }
+            clock += 1_000L
+        }
+        try {
+            history.ops(ops, attempt)
         } catch (_: CrashInjector.CrashInjected) {
             // Expected: the crash happened. Fall through to recovery.
         }
@@ -93,13 +104,13 @@ class CrashHarnessTest {
     fun `crash at every point yields an atomic prefix`() {
         for (point in CrashPoint.entries) {
             val dir = tempDir()
-            val (history, _) = runWithCrash(dir, point) {
-                commitMutation("cap-1")
-                commitMutation("cap-2")
-                recordUsage("epoch-1", 100L, 10L, 1000L)
-                recordUsage("epoch-1", 200L, 10L, 1000L)
-                revoke("cap-3")
-                commitMutation("cap-1") // replay: already consumed, refused
+            val (history, _) = runWithCrash(dir, point) { attempt ->
+                attempt(StoreOp.CommitMutation(-1, "cap-1"))
+                attempt(StoreOp.CommitMutation(-1, "cap-2"))
+                attempt(StoreOp.RecordUsage(-1, "epoch-1", 100L, 10L, 1000L))
+                attempt(StoreOp.RecordUsage(-1, "epoch-1", 200L, 10L, 1000L))
+                attempt(StoreOp.Revoke(-1, "cap-3"))
+                attempt(StoreOp.CommitMutation(-1, "cap-1")) // replay: already consumed, refused
             }
             recoverAndCheck(history, dir)
         }
@@ -125,9 +136,9 @@ class CrashHarnessTest {
         val dir = tempDir()
         val history = AttemptedHistory()
         // First: normal operations, then a crash.
-        val (h1, _) = runWithCrash(dir, CrashPoint.AFTER_COMMIT_FSYNC) {
-            commitMutation("cap-1")
-            recordUsage("epoch-1", 100L, 10L, 1000L)
+        val (h1, _) = runWithCrash(dir, CrashPoint.AFTER_COMMIT_FSYNC) { attempt ->
+            attempt(StoreOp.CommitMutation(-1, "cap-1"))
+            attempt(StoreOp.RecordUsage(-1, "epoch-1", 100L, 10L, 1000L))
         }
         history.ops.addAll(h1.ops)
         // Recovery 1: construct a store (replays log). Simulate a crash
@@ -152,30 +163,24 @@ class CrashHarnessTest {
         val dir = tempDir()
         val history = AttemptedHistory()
         // Crash 1.
-        val (h1, _) = runWithCrash(dir, CrashPoint.AFTER_INTENT_FSYNC) {
-            commitMutation("cap-1")
-            commitMutation("cap-2")
+        val (h1, _) = runWithCrash(dir, CrashPoint.AFTER_INTENT_FSYNC) { attempt ->
+            attempt(StoreOp.CommitMutation(-1, "cap-1"))
+            attempt(StoreOp.CommitMutation(-1, "cap-2"))
         }
         history.ops.addAll(h1.ops)
-        // Recover, do more, crash 2.
-        val store2 = DurableCapabilityStore(dir, clockMs = { 1_000_000L })
-        // Manually continue the history (the harness tracks it).
-        val h2 = AttemptedHistory()
-        // Sync seq with h1.
-        repeat(h1.ops.size) { h2.commitMutation("dummy") }
-        h2.ops.clear()
+        // Recover, do more, crash 2. Manually track with continuing seqs.
         val injector3 = CrashInjector(setOf(CrashPoint.AFTER_COMMIT_WRITE))
         try {
             val store3 = DurableCapabilityStore(
                 dir, clockMs = { 1_000_000L }, crash = injector3
             )
-            h2.recordUsage("epoch-1", 50L, 10L, 1000L)
+            val seq = history.ops.size.toLong()
+            history.ops.add(StoreOp.RecordUsage(seq, "epoch-1", 50L, 10L, 1000L))
             store3.recordUsage(
                 "epoch-1", 50L, 10L, 1000L, notAfterMs = Long.MAX_VALUE
             )
         } catch (_: CrashInjector.CrashInjected) {
         }
-        history.ops.addAll(h2.ops)
         // Final recovery: oracle must hold across both crashes.
         recoverAndCheck(history, dir)
     }
@@ -204,10 +209,10 @@ class CrashHarnessTest {
     fun `usage never rolls backward across crash`() {
         val dir = tempDir()
         val history = AttemptedHistory()
-        val (h1, _) = runWithCrash(dir, CrashPoint.AFTER_COMMIT_FSYNC) {
-            recordUsage("epoch-1", 100L, 10L, 1000L)
-            recordUsage("epoch-1", 200L, 10L, 1000L)
-            recordUsage("epoch-1", 300L, 10L, 1000L)
+        val (h1, _) = runWithCrash(dir, CrashPoint.AFTER_COMMIT_FSYNC) { attempt ->
+            attempt(StoreOp.RecordUsage(-1, "epoch-1", 100L, 10L, 1000L))
+            attempt(StoreOp.RecordUsage(-1, "epoch-1", 200L, 10L, 1000L))
+            attempt(StoreOp.RecordUsage(-1, "epoch-1", 300L, 10L, 1000L))
         }
         history.ops.addAll(h1.ops)
         val recovered = DurableCapabilityStore(dir, clockMs = { 1_000_000L })
