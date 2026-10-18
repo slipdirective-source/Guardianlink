@@ -298,12 +298,13 @@ class Outward0Test {
             maxMutations = 5L, maxBytes = null,
         )
 
-        // Holder B gets a different epoch
+        // Holder B gets a different epoch (allow overlap for test purposes)
         val lineageB = LineageId("holder-b-${java.util.UUID.randomUUID()}")
         val epochB = setup.issuer.mintEpoch(
             authority = setup.root.newLineageAuthority(lineageB),
             predicate = CapabilityPredicate("net/", setOf("tun-packet")),
             maxMutations = 5L, maxBytes = null,
+            allowOverlap = true,
         )
 
         // Holder A tries to use Holder B's epoch ID.
