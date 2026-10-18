@@ -27,8 +27,10 @@ class CommitSerializationTest {
     fun `concurrent executes never overlap inside the gates`() {
         val concurrentEntries = AtomicInteger(0)
         val maxConcurrent = AtomicInteger(0)
+        val applyCalls = AtomicInteger(0)
         val verifiers = object : PermissiveVerifiers() {
             override fun applyAction(substrate: SubstrateState, action: Action): SubstrateState {
+                applyCalls.incrementAndGet()
                 val c = concurrentEntries.incrementAndGet()
                 maxConcurrent.updateAndGet { m -> maxOf(m, c) }
                 try {
@@ -66,6 +68,7 @@ class CommitSerializationTest {
         }
         start.countDown()
         assertTrue(done.await(60, TimeUnit.SECONDS), "executes did not finish")
+        println("DIAG applyCalls=${applyCalls.get()} maxConcurrent=${maxConcurrent.get()} results=${results.size}")
         assertEquals(
             1, maxConcurrent.get(),
             "execute() overlapped inside the gates: commit lock broken"
