@@ -204,6 +204,14 @@ class DurableCapabilityStore(
         state = s
         fencingEpoch = maxEpoch
         nextSeq = maxSeq + 1
+        // Replay permit consumptions into the in-memory set
+        logFile.forEachLine(Charsets.UTF_8) { line ->
+            if (line.isBlank()) return@forEachLine
+            val parts = line.split("|")
+            if (parts.size >= 5 && parts[2] == "COMMIT" && parts[3] == "PERMIT_CONSUMED") {
+                consumedPermitIds.add(parts[4])
+            }
+        }
     }
 
     private fun parseOp(seq: Long, parts: List<String>): StoreOp? {
