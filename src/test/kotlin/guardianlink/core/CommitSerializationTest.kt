@@ -68,11 +68,11 @@ class CommitSerializationTest {
         }
         start.countDown()
         assertTrue(done.await(60, TimeUnit.SECONDS), "executes did not finish")
-        println("DIAG applyCalls=${applyCalls.get()} maxConcurrent=${maxConcurrent.get()} results=${results.size}")
-        assertEquals(
-            1, maxConcurrent.get(),
-            "execute() overlapped inside the gates: commit lock broken"
-        )
+        val mc = maxConcurrent.get()
+        val execCount = results.filterIsInstance<ConciergeInterface.ExecutionResult.Executed>().size
+        if (mc != 1) {
+            error("DIAG applyCalls=${applyCalls.get()} maxConcurrent=$mc results=${results.size} executed=$execCount")
+        }
         val executed = results.filterIsInstance<ConciergeInterface.ExecutionResult.Executed>()
         assertEquals(n, executed.size, "expected all $n executes to seal")
         // Every mutation landed exactly once.
