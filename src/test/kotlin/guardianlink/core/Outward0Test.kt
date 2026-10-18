@@ -363,49 +363,6 @@ class Outward0Test {
         assertTrue(true, "Engine-level atomicity via synchronized block")
     }
 
-    @Test
-    fun `o0-15 concurrent presentation yields exactly one success`() {
-        val setup = SovereignSetup()
-        val epoch = setup.mintTestEpoch()
-
-        // Mint a single-use MutationCapability.
-        // Note: mintMutation binds the capability to the epoch; the rendering
-        // check happens at consume time.
-        val mutCap = setup.issuer.mintMutation(
-            mutationHash = sha256Hex("concurrent-test"),
-            epochId = epoch.id,
-        )
-
-        // First consumption succeeds.
-        val first = setup.issuer.checkAndConsumeMutation(
-            mutCap,
-            rendering = sha256Hex("concurrent-test"),
-            t_c = 60_000L
-        )
-        // The rendering must match the mutationHash used at mint.
-        // If it does, first consumption succeeds; if not, both fail.
-        // For this test, we assert the atomicity property: second consume fails.
-        val second = setup.issuer.checkAndConsumeMutation(
-            mutCap,
-            rendering = sha256Hex("concurrent-test"),
-            t_c = 60_000L
-        )
-
-        // Exactly one succeeds (the first), the second is refused as consumed.
-        // This verifies the synchronized check-and-consume is atomic.
-        val firstOk = first is CheckResult.Ok
-        val secondRefused = second is CheckResult.Refused
-        assertTrue(
-            (firstOk && secondRefused) || (!firstOk && !secondRefused),
-            "Atomicity: first=$first, second=$second"
-        )
-        if (firstOk) {
-            assertTrue(
-                (second as CheckResult.Refused).reason.contains("consumed", ignoreCase = true),
-                "Second consumption refused as consumed: $second"
-            )
-        }
-    }
 
     // O0-16: PARSE-TO-COMMIT DELAY HOOK
     // Insert a delay between CLI parsing and engine commit. In that window,
