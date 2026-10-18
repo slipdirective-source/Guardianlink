@@ -7,6 +7,7 @@ import guardianlink.gates.Action
 import guardianlink.gates.Assent
 import guardianlink.gates.FakeClock
 import guardianlink.gates.KeyMaterial
+import guardianlink.gates.MonotonicClock
 import guardianlink.gates.NineGates
 import guardianlink.gates.Proofs
 import guardianlink.gates.Rails
@@ -55,12 +56,16 @@ internal data class TestRig(
 )
 
 /** A composed concierge with engine-owned instruments and a real anchor file. */
-internal fun testRig(tau: Long = 60_000L, verifiers: PermissiveVerifiers = PermissiveVerifiers()): TestRig {
+internal fun testRig(
+    tau: Long = 60_000L,
+    verifiers: PermissiveVerifiers = PermissiveVerifiers(),
+    clock: MonotonicClock = FakeClock(tau),
+): TestRig {
     val anchorDir = Files.createTempDirectory("guardianlink-test-anchors")
     val (voiceVerifier, enrolledVoice) = TestVoice.anchor()
     val gates = NineGates(
         Rails(), verifiers, voiceVerifier, enrolledVoice,
-        clock = FakeClock(tau), ledger = MerkleAuditLog(),
+        clock = clock, ledger = MerkleAuditLog(),
     )
     val anchor = AppendOnlyFileAnchor(anchorDir)
     val concierge = ConciergeInterface(

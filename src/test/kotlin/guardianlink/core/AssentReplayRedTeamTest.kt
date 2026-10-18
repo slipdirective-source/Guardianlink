@@ -1,6 +1,7 @@
 package guardianlink.core
 
 import guardianlink.gates.Action
+import guardianlink.gates.FakeClock
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -68,5 +69,57 @@ class AssentReplayRedTeamTest {
     private inline fun <reified T> assertIs(value: Any): T {
         assertTrue(value is T, "expected ${T::class.simpleName} but was $value")
         return value
+    }
+
+    @Test
+    fun sealKeysDecayWithTheAssentTheyConsumed() {
+        val clock = FakeClock(60_000L)
+        val rig = testRig(clock = clock)
+        val action = Action.Write("profile", mapOf("name" to "Neo"))
+        val evidence = testEvidence(action, rig.voice, assentedAtMs = 60_000L)
+
+        // Seal it: the key is live.
+        assertIs<ConciergeInterface.ExecutionResult.Executed>(
+            rig.concierge.execute(action, evidence))
+
+        // Immediate replay → halted by the live seal key.
+        val replay = assertIs<ConciergeInterface.ExecutionResult.Rejected>(
+            rig.concierge.execute(action, evidence))
+        assertTrue(replay.reason.contains("already consumed"),
+            "expected consumption halt, got: ${replay.reason}")
+
+        // 25h pass with no ledger activity: the assent dies by the idle
+        // rule, and the seal key decays with it.
+        clock.t += 25 * 3_600_000L
+
+        // The old ceremony, presented with fresh proofs (isolating the
+        // assent's death from proof staleness), must halt at Gate 7 on
+        // theta_assent_idle — not at the seal check, proving the key decayed.
+        val staleEvidence = testEvidence(action, rig.voice,
+            tau = clock.t, assentedAtMs = 60_000L)
+        val staleReplay = assertIs<ConciergeInterface.ExecutionResult.Rejected>(
+            rig.concierge.execute(action, staleEvidence))
+        assertTrue(staleReplay.reason.contains("theta_assent_idle"),
+            "expected idle-expiry halt after key decay, got: ${staleReplay.reason}")
+    }
+
+    @Test
+    fun freshCeremonyAfterDecayIsANewKey() {
+        val clock = FakeClock(60_000L)
+        val rig = testRig(clock = clock)
+        val action = Action.Write("profile", mapOf("name" to "Neo"))
+
+        assertIs<ConciergeInterface.ExecutionResult.Executed>(
+            rig.concierge.execute(action, testEvidence(action, rig.voice,
+                assentedAtMs = 60_000L)))
+
+        // 25h of silence: the old key decays.
+        clock.t += 25 * 3_600_000L
+
+        // A fresh ceremony (new assent) for the same actionId is a new key:
+        // the decayed record must not block it.
+        val fresh = rig.concierge.execute(action, testEvidence(action, rig.voice,
+            tau = clock.t, assentedAtMs = clock.t))
+        assertIs<ConciergeInterface.ExecutionResult.Executed>(fresh)
     }
 }
