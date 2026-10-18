@@ -51,14 +51,14 @@ internal data class TestRig(
     val gates: NineGates,
     val anchor: AppendOnlyFileAnchor,
     val anchorDir: Path,
-    val verifiers: PermissiveVerifiers,
+    val verifiers: Verifiers,
     val voice: GmmUbmVoiceVerifier,
 )
 
 /** A composed concierge with engine-owned instruments and a real anchor file. */
 internal fun testRig(
     tau: Long = 60_000L,
-    verifiers: PermissiveVerifiers = PermissiveVerifiers(),
+    verifiers: Verifiers = PermissiveVerifiers(),
     clock: MonotonicClock = FakeClock(tau),
 ): TestRig {
     val anchorDir = Files.createTempDirectory("guardianlink-test-anchors")
