@@ -46,6 +46,19 @@ sealed interface StoreResult {
     data object StaleEpoch : StoreResult
 }
 
+/**
+ * Immutable point-in-time view of everything a [DurableCapabilityStore]
+ * knows, taken under a single lock acquisition (see
+ * [DurableCapabilityStore.snapshot]). [state] is shared, not copied:
+ * StoreState is never mutated in place — every commit replaces it via
+ * applyOpAtomically — while [consumedPermitIds] is a defensive copy.
+ */
+data class CapabilityStoreSnapshot(
+    val fencingEpoch: Long,
+    val consumedPermitIds: Set<String>,
+    val state: StoreState,
+)
+
 /** Crash injection points. The harness enables these; production disables. */
 enum class CrashPoint {
     AFTER_INTENT_WRITE,
@@ -365,6 +378,29 @@ class DurableCapabilityStore(
 
     /** Observable state, for the oracle and tests. */
     fun currentState(): StoreState = withStoreLock { state }
+
+    /**
+     * Point-in-time snapshot of everything the store knows, taken under
+     * ONE lock acquisition so the parts cannot tear against a concurrent
+     * commit: the fencing epoch, the consumed permit ids, and the
+     * observable capability state are mutually consistent as of a single
+     * instant between two commits.
+     *
+     * Read-only: appends nothing, advances nothing, consumes nothing.
+     * This is the store's answer to "what do you know?" for observers
+     * (the sidecar's capability-state endpoint serves exactly this). It
+     * reports the in-memory state — the WAL replay as of construction
+     * plus every commit since — so another process's appends become
+     * visible here only on the next recovery (restart), exactly as with
+     * [isPermitConsumed] and [currentState].
+     */
+    fun snapshot(): CapabilityStoreSnapshot = withStoreLock {
+        CapabilityStoreSnapshot(
+            fencingEpoch = fencingEpoch,
+            consumedPermitIds = consumedPermitIds.toSet(),
+            state = state,
+        )
+    }
 
     /** For the harness: the ordered history of COMMITTED operations. */
     fun committedHistory(): List<StoreOp> {
