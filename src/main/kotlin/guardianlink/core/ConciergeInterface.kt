@@ -5,6 +5,7 @@ import guardianlink.audit.MerkleAuditLog
 import guardianlink.capability.CapabilityIssuer
 import guardianlink.capability.CheckResult
 import guardianlink.capability.sha256Hex
+import guardianlink.durability.DurableCapabilityStore
 import guardianlink.gates.Action
 import guardianlink.gates.Assent
 import guardianlink.gates.GateContext
@@ -55,6 +56,14 @@ import kotlin.concurrent.withLock
  * minted by the admission boundary for that exact mutation. The issuer
  * is injectable for falsification testing; the default is the engine's
  * own admission boundary on the engine clock.
+ *
+ * R-U1: embedders pass [permitStore] rooted at the same durability
+ * location as the rest of the engine's durable state (the sidecar's
+ * data dir, the Android app's filesDir — the root that holds
+ * clock.state and the anchors), and the default issuer is built with
+ * it, so signed-permit consumption is WAL-backed in production
+ * composition and survives restart. An explicitly injected issuer is
+ * used exactly as given. Null (demos, tests) = in-memory single-use.
  */
 class ConciergeInterface(
     private val policyEngine: PolicyEngine,
@@ -62,9 +71,13 @@ class ConciergeInterface(
     private val gates: NineGates,
     private val anchor: ExternalAnchor,
     initialSubstrate: SubstrateState = SubstrateState(emptyMap()),
-    private val issuer: CapabilityIssuer =
-        CapabilityIssuer(clockMs = { gates.clock.nowMs() }),
+    issuer: CapabilityIssuer? = null,
+    permitStore: DurableCapabilityStore? = null,
 ) {
+    private val issuer: CapabilityIssuer = issuer ?: CapabilityIssuer(
+        clockMs = { gates.clock.nowMs() },
+        permitStore = permitStore,
+    )
     data class Request(val tier: PolicyEngine.Tier, val hardRailRef: String?, val context: String)
     data class Response(val decision: PolicyEngine.EnforcementDecision, val auditEntryIndex: Int)
 
