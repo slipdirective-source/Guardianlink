@@ -1,5 +1,7 @@
 package guardianlink.capability
 
+import guardianlink.durability.DurableCapabilityStore
+import guardianlink.durability.StoreResult
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import java.security.SecureRandom
@@ -149,8 +151,12 @@ class SovereignIssuanceAuthority private constructor(
  * key is held by the SovereignRoot/issuer and never leaves it. A holder
  * cannot forge a permit without the key.
  *
- * The permitId is recorded in the WAL on use, providing single-use
- * enforcement across restart.
+ * On use ([CapabilityIssuer.mintEpochWithPermit]), the permitId is
+ * recorded in the [DurableCapabilityStore] WAL — when the issuer is wired
+ * with a store — BEFORE the epoch is minted, and the consumption check
+ * consults that record, providing single-use enforcement across restart
+ * (R-U1). An issuer without a store enforces single-use in memory only,
+ * for the life of the process.
  */
 data class SignedIssuancePermit(
     val rootId: String,
@@ -411,6 +417,16 @@ open class CapabilityIssuer(
      * permits are not supported (in-process object-capability only).
      */
     internal val signingKey: ByteArray? = null,
+    /**
+     * R-U1: durable permit-consumption store. When present, signed-permit
+     * consumption in [mintEpochWithPermit] is recorded in the store's WAL
+     * (fsync'd) BEFORE minting, and the consumed-check consults the store
+     * as well as the in-memory set — so permit single-use survives
+     * restart. Null (the default) preserves the in-memory-only behavior.
+     * Production composition passes a store rooted at the engine's
+     * durability location (see ConciergeInterface).
+     */
+    private val permitStore: DurableCapabilityStore? = null,
 ) {
     /**
      * Mint an epoch using a signed cross-process permit.
@@ -440,9 +456,15 @@ open class CapabilityIssuer(
         require(permit.rootId == rootId.value) {
             "Permit from different root (permit=${permit.rootId}, issuer=${rootId.value})"
         }
-        // Check single-use via permitId
+        // Check single-use via permitId: the in-memory set, and — when a
+        // durable store is wired — the WAL-replayed consumption record.
+        // The store is what makes this check hold across restart (R-U1):
+        // a fresh issuer's in-memory set is empty, the WAL is not.
         synchronized(lock) {
-            require(!consumedPermitIds.contains(permit.permitId)) {
+            require(
+                !consumedPermitIds.contains(permit.permitId) &&
+                    permitStore?.isPermitConsumed(permit.permitId) != true
+            ) {
                 "Permit already consumed: ${permit.permitId}"
             }
         }
@@ -453,8 +475,31 @@ open class CapabilityIssuer(
             lineageId = permit.lineageId?.let { LineageId(it) },
             newLineageId = permit.newLineageId?.let { LineageId(it) },
         )
-        // Mark permit as consumed BEFORE minting (fail-closed on crash)
+        // Mark permit as consumed BEFORE minting (fail-closed on crash).
+        // With a store wired, the durable record is written FIRST: if the
+        // WAL append/fsync fails, this throws and nothing is minted — no
+        // mint without a consumption record (R-U1). A crash after the
+        // record but before the mint consumes the permit without issuing
+        // an epoch: availability cost, never authority.
         synchronized(lock) {
+            if (permitStore != null) {
+                // The store's record is an atomic check-and-set under the
+                // store lock — the linearization point for single-use. Two
+                // issuers sharing one store can both pass the pre-check
+                // above, but only one gets Committed here; a Refused record
+                // surfaces as the same "already consumed" contract as the
+                // pre-check, and any other non-Committed result fails
+                // closed (no mint without recording).
+                when (val recorded = permitStore.recordPermitConsumption(permit.permitId)) {
+                    is StoreResult.Committed -> Unit
+                    is StoreResult.Refused ->
+                        throw IllegalArgumentException("Permit already consumed: ${permit.permitId}")
+                    StoreResult.StaleEpoch ->
+                        throw IllegalStateException(
+                            "Permit consumption not durably recorded ($recorded); refusing to mint"
+                        )
+                }
+            }
             consumedPermitIds.add(permit.permitId)
         }
         return mintEpoch(
@@ -487,8 +532,10 @@ open class CapabilityIssuer(
     private val usedLineageIds = ConcurrentHashMap.newKeySet<LineageId>()
     /**
      * C-4: Permit IDs that have been consumed. Enforces single-use issuance
-     * authorities. (In-memory; durable WAL integration is future work for
-     * cross-restart single-use.)
+     * authorities. When a [permitStore] is wired, signed-permit consumption
+     * is ALSO recorded in the store's WAL before minting (R-U1): the WAL
+     * record is the cross-restart authority and this set is the in-process
+     * cache of the same fact.
      */
     private val consumedPermitIds = ConcurrentHashMap.newKeySet<String>()
 

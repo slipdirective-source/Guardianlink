@@ -4,6 +4,7 @@ import guardianlink.audit.AppendOnlyFileAnchor
 import guardianlink.audit.ExternalAnchor
 import guardianlink.audit.MerkleAuditLog
 import guardianlink.core.ConciergeInterface
+import guardianlink.durability.DurableCapabilityStore
 import guardianlink.gates.Action
 import guardianlink.gates.Assent
 import guardianlink.gates.DurableMonotonicClock
@@ -79,6 +80,13 @@ class GuardianLinkEngine(
     private val ledger = MerkleAuditLog()
 
     /**
+     * R-U1: permit-consumption WAL (capability.log) rooted at the same
+     * data dir as clock.state and the anchors, so signed-permit
+     * single-use survives sidecar restart.
+     */
+    private val permitStore = DurableCapabilityStore(dataDir.toFile())
+
+    /**
      * Demo-grade voice anchor: UBM over a synthetic background population,
      * template enrolled for the synthetic demo "person" with phrase
      * references for every challenge phrase. Mirrors Main.kt's
@@ -103,6 +111,7 @@ class GuardianLinkEngine(
         NineGates(rails, verifiers, voiceVerifier, enrolledVoice, clock = clock, ledger = ledger),
         anchor,
         initialSubstrate = initialSubstrate,
+        permitStore = permitStore,
     )
 
     private data class PendingAction(

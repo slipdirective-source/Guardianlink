@@ -5,6 +5,7 @@ import android.util.Log
 import guardianlink.audit.AppendOnlyFileAnchor
 import guardianlink.audit.MerkleAuditLog
 import guardianlink.core.ConciergeInterface
+import guardianlink.durability.DurableCapabilityStore
 import guardianlink.gates.DurableMonotonicClock
 import guardianlink.voice.Gmm
 import guardianlink.gates.MonotonicClock
@@ -113,6 +114,9 @@ class GuardianApp : Application() {
                 gates,
                 anchor,
                 initialSubstrate = SubstrateState(emptyMap()),
+                // R-U1: permit-consumption WAL in the app sandbox, beside
+                // clock.state and the anchors — same durability root.
+                permitStore = DurableCapabilityStore(filesDir),
             )
 
             evidenceSupplier = AndroidEvidenceSupplier(this)
