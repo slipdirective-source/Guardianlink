@@ -2,6 +2,7 @@ package guardianlink.sidecar
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
@@ -37,6 +38,7 @@ class SidecarServer(
         createContext("/v1/actions/", ::handleActionSub) // prefix: /v1/actions/{id}/{challenge|assent}
         createContext("/v1/ledger/verify", ::handleLedgerVerify)
         createContext("/v1/substrate", ::handleSubstrate)
+        createContext("/v1/capabilities", ::handleCapabilities) // exact path enforced in the handler
         createContext("/", ::handleNotFound)
         executor = Executors.newFixedThreadPool(8)
     }
@@ -199,6 +201,71 @@ class SidecarServer(
         if (!requireMethod(ex, "GET")) return
         sendJson(ex, 200, JSONObject().put("records", substrateJson(engine.currentSubstrate())))
     }
+
+    /**
+     * Read-only capability state: what the engine's permit store knows
+     * (consumed permits, consumed/revoked capabilities, fencing epoch,
+     * recorded usage) plus the rails the engine was composed with.
+     *
+     * GET only, exact path (the context registration is a prefix; this
+     * handler admits only "/v1/capabilities" itself — sub-paths and
+     * look-alike prefixes are 404). There is deliberately NO parameter
+     * surface: a query string selects nothing and changes nothing. The
+     * handler reads one atomic store snapshot through the engine; it
+     * has no execution path and mutates nothing. Fail-closed: an
+     * engine-side failure is a 500 in the standard error shape — never
+     * a stack trace, never a partial or invented report.
+     */
+    private fun handleCapabilities(ex: HttpExchange) {
+        if (ex.requestURI.path != "/v1/capabilities") {
+            return sendJson(ex, 404, err("not found"))
+        }
+        if (!requireMethod(ex, "GET")) return
+        val r = try {
+            engine.capabilityState()
+        } catch (_: Exception) {
+            return sendJson(ex, 500, err("capability state unavailable"))
+        }
+        val usage = JSONObject()
+        for ((capId, u) in r.usage) {
+            usage.put(capId, JSONObject()
+                .put("mutations", u.mutations)
+                .put("bytes", u.bytes))
+        }
+        sendJson(ex, 200, JSONObject()
+            .put("permits", JSONObject()
+                .put("consumedCount", r.consumedPermitIds.size)
+                .put("consumedIds", JSONArray(r.consumedPermitIds)))
+            .put("capabilities", JSONObject()
+                .put("fencingEpoch", r.fencingEpoch)
+                .put("consumedIds", JSONArray(r.consumedCapabilityIds))
+                .put("revokedIds", JSONArray(r.revokedCapabilityIds))
+                .put("revokedEpochs", JSONArray(r.revokedEpochs))
+                .put("usage", usage))
+            .put("rails", railsJson(r.rails)))
+    }
+
+    private fun railsJson(rails: guardianlink.gates.Rails): JSONObject = JSONObject()
+        .put("gammaNoise", rails.gammaNoise)
+        .put("hMax", rails.hMax)
+        .put("epsilonDrift", rails.epsilonDrift)
+        .put("epsilonGovernance", rails.epsilonGovernance)
+        .put("deltaT", rails.deltaT)
+        .put("baseCoolingMs", rails.baseCoolingMs)
+        .put("coolingPerImpactStep", rails.coolingPerImpactStep)
+        .put("maxAssentIdleMs", rails.maxAssentIdleMs)
+        .put("maxActionNodes", rails.maxActionNodes)
+        .put("maxActionDepth", rails.maxActionDepth)
+        .put("maxConditionNodes", rails.maxConditionNodes)
+        .put("maxConditionDepth", rails.maxConditionDepth)
+        .put("maxStringBytes", rails.maxStringBytes)
+        .put("maxReadFields", rails.maxReadFields)
+        .put("maxWriteFields", rails.maxWriteFields)
+        .put("maxPayloadBytes", rails.maxPayloadBytes)
+        .put("maxMemoryBytes", rails.maxMemoryBytes)
+        .put("maxCycles", rails.maxCycles)
+        .put("bytesPerNode", rails.bytesPerNode)
+        .put("cyclesPerNode", rails.cyclesPerNode)
 
     private fun handleNotFound(ex: HttpExchange) {
         sendJson(ex, 404, err("not found"))
