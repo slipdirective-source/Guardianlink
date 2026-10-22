@@ -483,9 +483,21 @@ open class CapabilityIssuer(
         // an epoch: availability cost, never authority.
         synchronized(lock) {
             if (permitStore != null) {
-                val recorded = permitStore.recordPermitConsumption(permit.permitId)
-                check(recorded is StoreResult.Committed) {
-                    "Permit consumption not durably recorded ($recorded); refusing to mint"
+                // The store's record is an atomic check-and-set under the
+                // store lock — the linearization point for single-use. Two
+                // issuers sharing one store can both pass the pre-check
+                // above, but only one gets Committed here; a Refused record
+                // surfaces as the same "already consumed" contract as the
+                // pre-check, and any other non-Committed result fails
+                // closed (no mint without recording).
+                when (val recorded = permitStore.recordPermitConsumption(permit.permitId)) {
+                    is StoreResult.Committed -> Unit
+                    is StoreResult.Refused ->
+                        throw IllegalArgumentException("Permit already consumed: ${permit.permitId}")
+                    StoreResult.StaleEpoch ->
+                        throw IllegalStateException(
+                            "Permit consumption not durably recorded ($recorded); refusing to mint"
+                        )
                 }
             }
             consumedPermitIds.add(permit.permitId)
