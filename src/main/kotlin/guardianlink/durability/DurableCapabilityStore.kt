@@ -125,8 +125,19 @@ class DurableCapabilityStore(
     /**
      * Record a sovereign issuance permit as consumed (WAL-backed).
      * The permitId survives crash/restart via WAL replay.
+     *
+     * Atomic check-and-set under the store lock, like every other mutation
+     * in this store: if the permit is already consumed, this refuses
+     * WITHOUT appending a second record. The store is the linearization
+     * point that makes permit single-use hold across concurrent issuers
+     * and processes sharing this store, not just within one issuer's
+     * memory — a blind append here let two issuers racing on the same
+     * permit both record and both mint (cycle 4).
      */
     fun recordPermitConsumption(permitId: String): StoreResult = withStoreLock {
+        if (permitId in consumedPermitIds) {
+            return StoreResult.Refused("permit already consumed: $permitId")
+        }
         val seq = nextSeq++
         val line = "$seq|$fencingEpoch|COMMIT|PERMIT_CONSUMED|$permitId"
         appendLog(line)
