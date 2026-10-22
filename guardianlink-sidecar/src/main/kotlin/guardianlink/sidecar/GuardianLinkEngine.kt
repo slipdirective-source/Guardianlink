@@ -59,7 +59,9 @@ class BadAudioException(message: String) : Exception(message)
  * Threading: ConciergeInterface is documented not-thread-safe, so [assent]
  * and [issueChallenge] are serialized on [executeLock]. [submit] touches
  * only the pending-action map (a ConcurrentHashMap) and pure functions,
- * and never touches the engine.
+ * and never touches the engine. [capabilityState] is a read-only report
+ * over the sidecar's own permit store and rails — not an engine entry
+ * point: it executes nothing and touches no governed state.
  */
 class GuardianLinkEngine(
     dataDir: Path,
@@ -181,6 +183,32 @@ class GuardianLinkEngine(
         val merkleRoot: String,
         val anchorOk: Boolean,
         val anchorLines: Long,
+    )
+
+    /** One capability's recorded usage in the durable store. */
+    data class CapabilityUsage(val mutations: Long, val bytes: Long)
+
+    /**
+     * Read-only capability-state report: what the permit store knows —
+     * fencing epoch, consumed permits, consumed/revoked capabilities,
+     * revoked epochs, recorded usage — plus the rails this engine was
+     * composed with. Assembled from a SINGLE store snapshot, so the
+     * parts are mutually consistent as of one instant.
+     *
+     * Reports nothing the store does not know. In particular, live
+     * epoch capabilities are the issuer's in-process state (the issuer
+     * is encapsulated inside ConciergeInterface), they are not recorded
+     * in the store, and they are NOT reported here — no field of this
+     * report is inferred or reconstructed.
+     */
+    data class CapabilityStateReport(
+        val fencingEpoch: Long,
+        val consumedPermitIds: List<String>,
+        val consumedCapabilityIds: List<String>,
+        val revokedCapabilityIds: List<String>,
+        val revokedEpochs: List<Long>,
+        val usage: Map<String, CapabilityUsage>,
+        val rails: Rails,
     )
 
     /**
@@ -398,6 +426,26 @@ class GuardianLinkEngine(
     /** Read-only inspection of the governed substrate. Bypasses nothing. */
     fun currentSubstrate(): SubstrateState = executeLock.withLock {
         concierge.currentSubstrate()
+    }
+
+    /**
+     * Read-only capability-state report (see [CapabilityStateReport]).
+     * Reads the sidecar's own permit store via its atomic snapshot and
+     * the immutable rails — no lock of this class is needed: the store
+     * serializes internally and [Rails] is never mutated after
+     * construction. Mutates nothing, executes nothing.
+     */
+    fun capabilityState(): CapabilityStateReport {
+        val snap = permitStore.snapshot()
+        return CapabilityStateReport(
+            fencingEpoch = snap.fencingEpoch,
+            consumedPermitIds = snap.consumedPermitIds.sorted(),
+            consumedCapabilityIds = snap.state.consumed.sorted(),
+            revokedCapabilityIds = snap.state.revoked.sorted(),
+            revokedEpochs = snap.state.revokedEpochs.sorted(),
+            usage = snap.state.usage.mapValues { (_, v) -> CapabilityUsage(v.first, v.second) },
+            rails = rails,
+        )
     }
 
     private fun evictExpired() {
