@@ -1,0 +1,399 @@
+package guardianlink.v2.core
+
+import java.util.Locale
+
+/** Port of TS `ClusterId` in `src/questions.ts`. */
+enum class ClusterId(val wire: String) {
+    POSITION("position"),
+    HISTORY("history"),
+    RELATIONSHIPS("relationships"),
+    TRAJECTORY("trajectory"),
+    AGENCY("agency"),
+    CUSTOM("custom"),
+}
+
+data class Conflict(
+    val topic: String,
+    val eventIds: List<String>,
+    val claims: List<String>,
+)
+
+/** How an answer is grounded. An inference is never silently promoted to observation. */
+enum class Basis(val wire: String) {
+    OBSERVED("observed"),
+    INFERRED("inferred"),
+    MIXED("mixed"),
+    NONE("none"),
+}
+
+/** Port of TS `AnswerSnapshot`. */
+data class AnswerSnapshot(
+    val version: Int,
+    val text: String,
+    val delta: Delta,
+    val basis: Basis,
+    val evidenceIds: List<String>,
+    val conflicts: List<Conflict>,
+    val retractions: List<String>,
+    val evaluatedAt: String,
+    val changeNote: String,
+)
+
+/** Port of TS `StandingQuestion`. */
+class StandingQuestion(
+    val id: String,
+    val text: String,
+    val cluster: ClusterId,
+    /** dependency topic prefixes; irrelevant admissions do not touch this question */
+    val topicPrefixes: List<String>,
+    /** for custom questions: terms matched against event topic/claim */
+    val matchTerms: List<String>,
+    val priority: Int,
+    var current: AnswerSnapshot,
+) {
+    val history: MutableList<AnswerSnapshot> = mutableListOf()
+    var stale: Boolean = true
+    var recomputeCount: Int = 0
+}
+
+private val DRIFT_TERMS = listOf("drift", "behind", "delay", "over budget", "missed", "problem", "stuck")
+
+private data class TopicState(
+    val topic: String,
+    val live: List<EvidenceEvent>,
+    val latest: EvidenceEvent?,
+    val conflict: Conflict?,
+)
+
+private data class EvalResult(
+    val text: String,
+    val delta: Delta,
+    val basis: Basis,
+    val evidenceIds: List<String>,
+    val conflicts: List<Conflict>,
+    val retractions: List<String>,
+)
+
+/**
+ * Standing-question engine (spec §3.3). Port of TS `src/questions.ts`.
+ *
+ * The five core questions are standing computations over the ledger, not
+ * answers to prompts: dependency tracking marks a question stale when a
+ * relevant event is admitted and recomputes it immediately. Every answer
+ * carries a version, an evidence set, a four-valued delta, conflicts
+ * (surfaced, never silently resolved), and a change history.
+ */
+class QuestionEngine(
+    private val ledger: Ledger,
+    private val now: V2Clock = V2Clock { java.time.Instant.now() },
+) {
+    private val questions = LinkedHashMap<String, StandingQuestion>()
+
+    /** set by the harness to audit material answer changes */
+    var onVersionChange: ((StandingQuestion, AnswerSnapshot) -> Unit)? = null
+
+    init {
+        define("position", "Where am I?", ClusterId.POSITION, listOf("location", "medication", "state", "collector"), emptyList(), 100)
+        define("history", "How did I get here?", ClusterId.HISTORY, emptyList(), emptyList(), 90)
+        define("relationships", "What is interacting with what?", ClusterId.RELATIONSHIPS, listOf("project", "relationship", "account", "person"), emptyList(), 80)
+        define("trajectory", "Where am I going?", ClusterId.TRAJECTORY, listOf("location", "project", "plan"), emptyList(), 70)
+        define("agency", "What can I do about it?", ClusterId.AGENCY, listOf("medication", "action", "rail", "collector"), emptyList(), 60)
+        ledger.onAdmit { e -> handleAdmission(e) }
+    }
+
+    private fun define(
+        id: String,
+        text: String,
+        cluster: ClusterId,
+        prefixes: List<String>,
+        terms: List<String>,
+        priority: Int,
+    ): StandingQuestion {
+        val q = StandingQuestion(
+            id = id,
+            text = text,
+            cluster = cluster,
+            topicPrefixes = prefixes,
+            matchTerms = terms,
+            priority = priority,
+            current = AnswerSnapshot(
+                version = 0,
+                text = "(not yet evaluated)",
+                delta = Delta.UNKNOWN,
+                basis = Basis.NONE,
+                evidenceIds = emptyList(),
+                conflicts = emptyList(),
+                retractions = emptyList(),
+                evaluatedAt = IsoTime.format(now.now()),
+                changeNote = "created",
+            ),
+        )
+        questions[id] = q
+        recompute(q)
+        return q
+    }
+
+    fun addCustomQuestion(text: String, createdBy: String): StandingQuestion {
+        val terms = extractTerms(text)
+        val slug = text.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(40)
+        val id = "q-$slug-${questions.size}"
+        return define(id, text, ClusterId.CUSTOM, emptyList(), terms, 50)
+    }
+
+    fun get(id: String): StandingQuestion? = questions[id]
+
+    fun all(): List<StandingQuestion> = questions.values.sortedByDescending { it.priority }
+
+    fun findCustomByTerm(term: String): StandingQuestion? =
+        all().firstOrNull { q ->
+            q.cluster == ClusterId.CUSTOM && q.matchTerms.any { t -> term.lowercase().contains(t) || t.contains(term.lowercase()) }
+        }
+
+    /** Dependency tracking: an admission only touches questions it is relevant to. */
+    private fun relevant(q: StandingQuestion, e: EvidenceEvent): Boolean {
+        if (q.cluster == ClusterId.HISTORY) return true
+        if (q.topicPrefixes.any { p -> e.topic == p || e.topic.startsWith(p + ".") || e.topic.startsWith(p) }) return true
+        if (q.matchTerms.isNotEmpty()) {
+            val hay = (e.topic + " " + e.claim).lowercase()
+            if (q.matchTerms.any { t -> hay.contains(t) }) return true
+        }
+        // an event that retracts/supersedes/conflicts evidence this answer rests on is always relevant
+        if (e.relations.any { r -> q.current.evidenceIds.contains(r.targetId) }) return true
+        return false
+    }
+
+    private fun handleAdmission(e: EvidenceEvent) {
+        for (q in questions.values.toList()) {
+            if (relevant(q, e)) {
+                q.stale = true
+                recompute(q)
+            }
+        }
+    }
+
+    private fun topicStates(
+        events: List<EvidenceEvent>,
+        prefixes: List<String>,
+        terms: List<String>,
+    ): Pair<List<TopicState>, List<String>> {
+        val live = ledger.liveEvents()
+        val matched = live.filter { e ->
+            if (events.isNotEmpty() && !events.contains(e)) return@filter false
+            if (prefixes.isNotEmpty() && prefixes.any { p -> e.topic.startsWith(p) }) return@filter true
+            if (terms.isNotEmpty()) {
+                val hay = (e.topic + " " + e.claim).lowercase()
+                if (terms.any { t -> hay.contains(t) }) return@filter true
+            }
+            prefixes.isEmpty() && terms.isEmpty()
+        }
+        val byTopic = LinkedHashMap<String, MutableList<EvidenceEvent>>()
+        for (e in matched) byTopic.getOrPut(e.topic) { mutableListOf() }.add(e)
+        val states = mutableListOf<TopicState>()
+        for ((topic, evs) in byTopic) {
+            val sorted = evs.sortedBy { it.seq }
+            val affirms = sorted.filter { it.polarity == Polarity.AFFIRM }
+            val negates = sorted.filter { it.polarity == Polarity.NEGATE }
+            val conflict: Conflict? =
+                if (affirms.isNotEmpty() && negates.isNotEmpty()) {
+                    Conflict(topic, sorted.map { it.id }, sorted.map { it.claim })
+                } else {
+                    null
+                }
+            states.add(TopicState(topic, sorted, sorted.lastOrNull(), conflict))
+        }
+        val retracted = ledger.allEvents().filter { e -> ledger.isRetracted(e.id) }.map { it.id }
+        return Pair(states, retracted)
+    }
+
+    private fun renderStateLine(s: TopicState): String {
+        val e = s.latest!!
+        val srcTag = if (e.agentDerived) "agent-derived via ${e.source}" else e.source
+        var line = "${s.topic}: ${e.claim} [$srcTag, conf ${String.format(Locale.US, "%.2f", e.confidence)}]"
+        if (s.conflict != null) {
+            line += " — CONFLICT with: ${s.conflict.claims.filter { c -> c != e.claim }.joinToString(" | ")}"
+        }
+        return line
+    }
+
+    private fun evaluate(q: StandingQuestion): EvalResult {
+        val all = ledger.allEvents()
+        val live = ledger.liveEvents()
+
+        // inapplicable is a DECLARED state: a system marker event on every dependency
+        val markerTopics = if (q.topicPrefixes.isNotEmpty()) q.topicPrefixes else q.matchTerms
+        if (markerTopics.isNotEmpty()) {
+            val markers = live.filter { e -> e.kind == EventKind.SYSTEM && e.claim == "__not_applicable__" }
+            val allMarked = markerTopics.all { t -> markers.any { m -> m.topic == t || m.topic.startsWith(t) } }
+            if (allMarked && markers.isNotEmpty()) {
+                return EvalResult(
+                    text = "Not applicable: every dependency of \"${q.text}\" is declared inapplicable.",
+                    delta = Delta.INAPPLICABLE,
+                    basis = Basis.NONE,
+                    evidenceIds = markers.map { it.id },
+                    conflicts = emptyList(),
+                    retractions = emptyList(),
+                )
+            }
+        }
+
+        if (q.cluster == ClusterId.HISTORY) {
+            if (all.isEmpty()) {
+                return EvalResult(
+                    text = "No events yet. Nothing has been admitted, so there is no path to report.",
+                    delta = Delta.UNKNOWN,
+                    basis = Basis.NONE,
+                    evidenceIds = emptyList(),
+                    conflicts = emptyList(),
+                    retractions = emptyList(),
+                )
+            }
+            val recent = all.sortedBy { it.seq }.takeLast(6)
+            val lines = recent.map { e -> "#${e.seq} [${e.kind.wire}] ${e.claim} (${e.source})" }
+            return EvalResult(
+                text = "Path so far:\n" + lines.joinToString("\n"),
+                delta = Delta.DISTINGUISHED,
+                basis = Basis.MIXED,
+                evidenceIds = recent.map { it.id },
+                conflicts = emptyList(),
+                retractions = all.filter { e -> ledger.isRetracted(e.id) }.map { it.id },
+            )
+        }
+
+        // Custom questions track the world, not the governance chatter about themselves:
+        // proposals/assents/executions/outcomes and the creation notice are excluded from term matching.
+        val evalEvents =
+            if (q.cluster == ClusterId.CUSTOM) {
+                all.filter { e ->
+                    e.kind !in setOf(EventKind.ACTION_PROPOSAL, EventKind.ASSENT, EventKind.EXECUTION, EventKind.OUTCOME) &&
+                        e.topic != "standing_question"
+                }
+            } else {
+                all
+            }
+        val (states, retracted) = topicStates(evalEvents, q.topicPrefixes, q.matchTerms)
+        val conflicts = states.mapNotNull { it.conflict }
+        val evidenceIds = states.flatMap { s -> s.live.map { it.id } }
+
+        if (states.isEmpty()) {
+            return EvalResult(
+                text = "Unknown: no live evidence bears on \"${q.text}\" yet.",
+                delta = Delta.UNKNOWN,
+                basis = Basis.NONE,
+                evidenceIds = emptyList(),
+                conflicts = emptyList(),
+                retractions = retracted,
+            )
+        }
+
+        val lines = mutableListOf<String>()
+        for (s in states) {
+            if (s.topic.startsWith("collector.")) {
+                val name = s.topic.removePrefix("collector.")
+                lines.add("collector $name: ${s.latest!!.claim}")
+            } else {
+                lines.add(renderStateLine(s))
+            }
+        }
+
+        if (q.cluster == ClusterId.TRAJECTORY) {
+            val loc = states.firstOrNull { it.topic == "location" }
+            if (loc != null && loc.live.size > 1) {
+                lines.add("movement: ${loc.live[0].claim} -> ${loc.latest!!.claim}")
+            }
+            for (s in states) {
+                if (s.latest != null && DRIFT_TERMS.any { t -> s.latest.claim.lowercase().contains(t) }) {
+                    lines.add("heading: DRIFT SIGNAL on ${s.topic}")
+                }
+            }
+        }
+        if (q.cluster == ClusterId.AGENCY) {
+            val proposals = live.filter { it.kind == EventKind.ACTION_PROPOSAL }
+            val executed = live.filter { it.kind == EventKind.EXECUTION }
+                .flatMap { e -> e.relations.filter { r -> r.type == RelationType.EXECUTES }.map { r -> r.targetId } }
+                .toSet()
+            val pending = proposals.filter { p -> !executed.contains(p.id) }
+            for (p in pending) lines.add("pending action awaiting authority: ${p.claim}")
+            if (conflicts.isNotEmpty()) lines.add("some options are blocked by unresolved conflicts (see conflicts)")
+        }
+        if (q.cluster == ClusterId.CUSTOM) {
+            val drift = states.any { s -> s.latest != null && DRIFT_TERMS.any { t -> s.latest.claim.lowercase().contains(t) } }
+            lines.add(if (drift) "DRIFT FLAGGED: matching evidence carries drift signals." else "No drift signals in matching live evidence.")
+        }
+
+        val kinds = states.flatMap { s -> s.live.map { it.kind } }.toSet()
+        val basis: Basis =
+            if (kinds.contains(EventKind.SENSOR_OBSERVATION)) {
+                if (kinds.size > 1) Basis.MIXED else Basis.OBSERVED
+            } else if (kinds.contains(EventKind.DERIVED_INFERENCE) || kinds.contains(EventKind.AGENT_DERIVED)) {
+                Basis.INFERRED
+            } else {
+                Basis.MIXED
+            }
+
+        val delta: Delta =
+            if (conflicts.isNotEmpty()) {
+                Delta.UNKNOWN
+            } else {
+                val corroborated = states.any { s ->
+                    val sources = s.live
+                        .filter { e -> e.polarity == (s.latest?.polarity ?: Polarity.AFFIRM) }
+                        .map { it.source }
+                        .toSet()
+                    sources.size >= 2
+                }
+                if (corroborated) Delta.EQUIVALENT else Delta.DISTINGUISHED
+            }
+
+        return EvalResult(lines.joinToString("\n"), delta, basis, evidenceIds, conflicts, retracted)
+    }
+
+    fun recompute(q: StandingQuestion): AnswerSnapshot {
+        val result = evaluate(q)
+        q.recomputeCount += 1
+        q.stale = false
+        val cur = q.current
+        val changed =
+            cur.version == 0 ||
+                cur.text != result.text ||
+                cur.delta != result.delta ||
+                cur.conflicts != result.conflicts
+        if (!changed) {
+            q.current = cur.copy(evaluatedAt = IsoTime.format(now.now()))
+            return q.current
+        }
+        val snap = AnswerSnapshot(
+            version = cur.version + 1,
+            text = result.text,
+            delta = result.delta,
+            basis = result.basis,
+            evidenceIds = result.evidenceIds,
+            conflicts = result.conflicts,
+            retractions = result.retractions,
+            evaluatedAt = IsoTime.format(now.now()),
+            changeNote = if (cur.version == 0) "initial evaluation" else "updated: ${result.text.split("\n")[0].take(120)}",
+        )
+        q.current = snap
+        q.history.add(snap)
+        onVersionChange?.invoke(q, snap)
+        return snap
+    }
+
+    /** Force re-evaluation of every question (e.g. after sync import). */
+    fun recomputeAll() {
+        for (q in questions.values.toList()) recompute(q)
+    }
+}
+
+/** Port of TS `extractTerms` in `src/questions.ts`. */
+fun extractTerms(text: String): List<String> {
+    val stop = setOf(
+        "whether", "the", "a", "an", "is", "are", "keep", "track", "of", "my", "me", "if", "it",
+        "this", "that", "still", "going", "to", "do", "does", "did", "what", "how", "am", "i",
+    )
+    val words = text.lowercase().replace(Regex("[^a-z0-9 ]"), " ")
+        .split(Regex("\\s+"))
+        .filter { w -> w.length > 2 && !stop.contains(w) }
+    val terms = LinkedHashSet<String>(words)
+    for (i in 0 until words.size - 1) terms.add(words[i] + " " + words[i + 1])
+    return terms.toList().take(8)
+}
