@@ -38,3 +38,7 @@ include("guardianlink-sidecar")
 // compilable and testable on JVM (Termux); this module is the only
 // Android-coupled code in the repo.
 include("android-app")
+
+// GuardianLink Surface v0.2: native app (standing-question core port +
+// governed sensing). Pure-logic core stays free of android.* imports.
+include("android-app-v2")
