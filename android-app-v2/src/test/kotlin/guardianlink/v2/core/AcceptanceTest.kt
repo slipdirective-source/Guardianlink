@@ -132,7 +132,7 @@ class AcceptanceTest {
 
     /* §6.8 Drift flag: parameters outside a committed rail envelope suspend execution */
     @Test
-    fun `6-8 drift-flagged proposal is refused; in-envelope proposal runs under the rail`() {
+    fun `6-8 drift-flagged proposal is refused and in-envelope proposal runs under the rail`() {
         val (h, _) = makeHarness()
         h.actions.addRail("pause_collector", "location", mapOf("durationMin" to 60.0), "sovereign")
         val drift = h.actions.propose(
@@ -224,7 +224,7 @@ class AcceptanceTest {
 
     /* §6.13 Account use under authority: scope checked; disconnection blocks use */
     @Test
-    fun `6-13 account evidence under authority; disconnect blocks use`() {
+    fun `6-13 account evidence under authority and disconnect blocks use`() {
         val (h, _) = makeHarness()
         h.accounts.register(Account(id = "gmail-biz", label = "Business Gmail", role = "business", scopes = listOf("read_email")))
         val ev = h.admitAccountEvidence("gmail-biz", "read_email", "account.email", "Client confirmed Friday install")
