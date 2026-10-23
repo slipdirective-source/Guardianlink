@@ -44,6 +44,17 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
       - name: Unit tests (v0.2 pure-Kotlin core)
         run: ./gradlew :android-app-v2:testDebugUnitTest --stacktrace
+      - name: Show test result counts (guards against silent zero-test runs)
+        run: |
+          for f in android-app-v2/build/test-results/testDebugUnitTest/*.xml; do
+            grep -o '<testsuite[^>]*' "$f" | head -1
+          done
+      - name: Upload test results
+        uses: actions/upload-artifact@v5
+        with:
+          name: guardianlink-v0.2-test-results
+          path: android-app-v2/build/test-results/testDebugUnitTest/*.xml
+          if-no-files-found: error
       - name: Build debug APK
         run: ./gradlew :android-app-v2:assembleDebug --stacktrace
       - name: Upload APK artifact
