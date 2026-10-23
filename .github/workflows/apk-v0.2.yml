@@ -1,0 +1,54 @@
+name: APK v0.2
+
+# DRAFT — install as .github/workflows/apk-v0.2.yml in the Guardianlink
+# repo (see MODULE-INTEGRATION.md §3). Modeled on the existing apk.yml.
+#
+# Builds the GuardianLink v0.2 Android app (android-app-v2) and attaches
+# an installable debug APK. Unlike the scaffold module, this workflow
+# runs the module's unit tests first: the v0.2 core is pure Kotlin and
+# its JUnit 5 suites are part of the build's claim (PORT-MAP §e step 5).
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'android-app-v2/**'
+      - 'src/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'settings.gradle.kts'
+      - 'build.gradle.kts'
+      - '.github/workflows/apk-v0.2.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'android-app-v2/**'
+  workflow_dispatch:
+
+jobs:
+  apk-v02:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Make wrapper executable
+        run: chmod +x gradlew
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0 platform-tools'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Unit tests (v0.2 pure-Kotlin core)
+        run: ./gradlew :android-app-v2:testDebugUnitTest --stacktrace
+      - name: Build debug APK
+        run: ./gradlew :android-app-v2:assembleDebug --stacktrace
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: guardianlink-v0.2-debug-apk
+          path: android-app-v2/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
