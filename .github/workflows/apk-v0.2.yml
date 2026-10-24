@@ -94,7 +94,7 @@ jobs:
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
           cd zk-bridge
           cargo ndk -t arm64-v8a -o "$GITHUB_WORKSPACE/android-app-v2/src/main/jniLibs" build --release
-          ls -la android-app-v2/src/main/jniLibs/arm64-v8a/
+          ls -la "$GITHUB_WORKSPACE/android-app-v2/src/main/jniLibs/arm64-v8a/"
       - name: Unit tests (v0.2 pure-Kotlin core)
         run: ./gradlew :android-app-v2:testDebugUnitTest --stacktrace
       - name: Show test result counts (guards against silent zero-test runs)
