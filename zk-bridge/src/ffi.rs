@@ -49,20 +49,20 @@ pub struct FfiProofBundle {
 #[derive(uniffi::Error, Debug, Clone)]
 pub enum FfiZkError {
     /// Value/ceiling outside the quantized domain, or value > ceiling.
-    OutOfDomain { message: String },
+    OutOfDomain { detail: String },
     /// Statement parts disagree (counts, lengths, commitment that
     /// does not open to its claimed ceiling).
-    ShapeMismatch { message: String },
+    ShapeMismatch { detail: String },
     /// An internal failure — including a contained panic.
-    Internal { message: String },
+    Internal { detail: String },
 }
 
 impl std::fmt::Display for FfiZkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FfiZkError::OutOfDomain { message } => write!(f, "out-of-domain: {message}"),
-            FfiZkError::ShapeMismatch { message } => write!(f, "shape-mismatch: {message}"),
-            FfiZkError::Internal { message } => write!(f, "internal: {message}"),
+            FfiZkError::OutOfDomain { detail } => write!(f, "out-of-domain: {detail}"),
+            FfiZkError::ShapeMismatch { detail } => write!(f, "shape-mismatch: {detail}"),
+            FfiZkError::Internal { detail } => write!(f, "internal: {detail}"),
         }
     }
 }
@@ -71,16 +71,16 @@ impl std::error::Error for FfiZkError {}
 impl From<ZkError> for FfiZkError {
     fn from(e: ZkError) -> Self {
         match e {
-            ZkError::OutOfDomain(m) => FfiZkError::OutOfDomain { message: m },
-            ZkError::ShapeMismatch(m) => FfiZkError::ShapeMismatch { message: m },
-            ZkError::Parse(m) => FfiZkError::ShapeMismatch { message: m },
-            ZkError::Prover(m) => FfiZkError::Internal { message: m },
+            ZkError::OutOfDomain(m) => FfiZkError::OutOfDomain { detail: m },
+            ZkError::ShapeMismatch(m) => FfiZkError::ShapeMismatch { detail: m },
+            ZkError::Parse(m) => FfiZkError::ShapeMismatch { detail: m },
+            ZkError::Prover(m) => FfiZkError::Internal { detail: m },
         }
     }
 }
 
 fn panic_message(context: &str) -> FfiZkError {
-    FfiZkError::Internal { message: format!("{context}: internal panic contained at the FFI boundary") }
+    FfiZkError::Internal { detail: format!("{context}: internal panic contained at the FFI boundary") }
 }
 
 /// Rail-commit (§5): commit to a quantized ceiling with a fresh
