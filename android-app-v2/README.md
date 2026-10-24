@@ -1,274 +1,285 @@
-# GuardianLink v0.2 — android-app-v2 (staging)
+# android-app-v2 — GuardianLink v0.2 surface (Android module)
 
-The GuardianLink Surface v0.2 native Android module, built to
-[ANDROID-PORT-MAP.md](../ANDROID-PORT-MAP.md) (§c module plan, §d
-permission/FGS matrix, §e CI steps) and the v0.2 correction spec
-§3/§5/§6.
+Status: **slice 3 — the engine evidence path is built.** The v0.2 core
+(ledger, standing questions, conversation, governed actions, rails,
+sync, audit) is ported to pure Kotlin and JVM-tested. The device layer
+persists the harness state encrypted at rest (AES-256-GCM via
+EncryptedFile + Android Keystore MasterKey), collects location and
+motion through framework APIs only (no Google Play Services), and —
+new in this slice — carries governed actions **all the way into the
+GuardianLink engine**: persistent Ed25519 key custody, policy ports
+derived from the core's own governance state, substrate/action
+translation, and the full assent ceremony through
+`ConciergeInterface`, the engine's sole doorway. What the ceremony can
+and cannot complete today is stated per gate, not smoothed over:
+**Gate 3 (ZK) is at deny by ruling, so production execution halts at
+Gate 3** and the UI says exactly that. The build is still
+**code-complete / CI-pending**: no local SDK exists in the authoring
+environment; the parent's CI run (push + `:android-app-v2:testDebugUnitTest`
++ APK assemble) is the compiler of record.
 
-**Status:** the first cut of this module is pushed to the Guardianlink
-repo and CI-green (26 tests). **This slice — persistence + encryption
-at rest, and the location/motion collectors — is staged here and NOT
-yet compiled.** There is no Android SDK or kotlinc in the authoring
-environment; engine signatures were read from the Guardianlink sources
-at `main` @ `50ae09dfbf25107b967ed154d6a0af45f255db6c` (fresh shallow
-clone) and the Android APIs used are framework/security-crypto
-signatures documented in the code. Compilation is unverified until
-the parent's CI push — see the CI-verify list at the bottom.
+Scope authority: `EVIDENCE-PATH.md` (per-gate evidence ledger, the
+assent ceremony steps 1–6, key-custody requirements) and
+`ANDROID-PORT-MAP.md` in the parent directory. The TypeScript core in
+`guardianlink-v0.2/` remains the semantic reference; this module is its
+Kotlin twin, held to identical canonical bytes (hash vectors pinned in
+tests).
 
-This tree mirrors the live `android-app-v2/` module in the repo. The
-existing `android-app/` scaffold is not touched by anything here.
+## Real vs stubbed — the honest table
 
-## What this slice adds
-
-1. **Persistence (pure-Kotlin core).** `StateStore` serializes the full
-   core state — ledger events (local chain + foreign), audit entries,
-   standing-question state including every answer version in history,
-   collector/plug/account registries, rails and proposals — to one
-   canonical-JSON document (`gl-state-1`), behind a `StateStorage`
-   interface (read/write/list) with an in-memory implementation (tests)
-   and a `java.io` file implementation (temp-write + fsync + atomic
-   rename). Loads verify BEFORE trust: strict JSON parse (a dedicated
-   strict parser, `JsonParser.kt`), format check, ledger chain
-   verification, per-event hash checks for foreign events, audit chain
-   verification on a scratch log, and root/sequence cross-checks. Any
-   failure throws `StateStoreException` with a named kind
-   (PARSE_ERROR, UNSUPPORTED_FORMAT, LEDGER_CHAIN_INVALID,
-   EVENT_HASH_MISMATCH, AUDIT_CHAIN_INVALID, INCONSISTENT_STATE,
-   STORAGE_READ_FAILED) and loads nothing — no partial state, no
-   silent reset, and a failed load never writes to the storage.
-2. **Encryption at rest (app layer).** `EncryptedStateStorage` runs
-   the file store through the scaffold's established
-   Keystore/`EncryptedFile` pattern. The Application restores the core
-   from it at startup (load-or-initialize, chains verified) and
-   surfaces a visible fail-closed persistence state in the UI when
-   verification fails; a failed store is never overwritten by the
-   session. Format and recovery posture are documented below.
-3. **Location + motion collectors (app layer).** Framework APIs only
-   (`LocationManager`, `SensorManager`), replacing the honest stubs.
-   Permission flows in MainActivity; denials degrade by name in the
-   standing answers, as before.
-
-## Persistence format and recovery posture
-
-- **Document:** `gl-state-1`, canonical JSON (the `Canonical.kt`
-  writer), one document for the whole core state. The EVENT encoding
-  is shared with `SyncBundle.toCanonicalJson` (hashed body map + hash)
-  and the document carries the same `Ledger.rootOf` commitment over
-  the local chain. The difference from a sync bundle is scope, and it
-  is deliberate: sync exports EVIDENCE for another device to merge;
-  the state document additionally carries harness-internal state
-  (audit chain, question snapshots, registries, rails, proposals)
-  that must be restored exactly on this device and never merged into
-  another device's internals.
-- **Encryption:** the plaintext document above is sealed with
-  `EncryptedFile` (AES256_GCM_HKDF_4KB) under a Keystore-held
-  `MasterKey` (AES256_GCM scheme) — the scaffold `TemplateStore`
-  pattern verbatim. Keys never leave the Keystore.
-- **Atomicity:** EncryptedFile binds ciphertext to the file name, so
-  temp+rename is unavailable; the encrypted store uses two fixed
-  slots per name (`harness-state.a.enc` / `.b.enc`) plus a plaintext
-  slot marker. Writes go to the inactive slot, are decrypted back and
-  byte-compared, and only then does the marker flip. A crash mid-write
-  leaves the prior slot active and untouched; a marker-named slot that
-  fails to decrypt falls back to the other slot (an older authentic
-  state — StateStore still hash-verifies whatever it is handed).
-- **Recovery posture, named honestly:** Keystore key loss
-  (invalidation, some credential changes, factory reset) makes the
-  ciphertext unreadable and the stored state is GONE. The app surfaces
-  that as a named persistence failure and runs visibly on an empty
-  in-memory core; there is no plaintext fallback, no silent reset, and
-  no key escrow in this build.
-- **Save points and their limit:** state is written at explicit save
-  points (completed conversation turns, activity pause). This
-  protects the store against corruption and torn writes; it does NOT
-  make every admission durable — a process kill between save points
-  loses the admissions since the last one. Admission-level durability
-  (an append-only write-ahead admission log) is future work and is
-  the same open question as PORT-MAP §f risk 2 for the engine audit.
-
-## Location/motion: the GMS trade-off (PORT-MAP §f risk 5, decided for this slice)
-
-Framework APIs only — no Google Play services dependency is added.
-`LocationManager` and `SensorManager` keep the build dependency-free
-beyond androidx and work on devices without Play services. The costs
-are real: framework location is less power-optimized than
-FusedLocation (no fused batching/adaptive cadence), first fix can be
-slower, and still/moving classification is our own accelerometer
-classifier instead of the Activity Recognition API's models. Accuracy
-is taken from each fix's own reported radius and drives the admitted
-confidence — never invented. Revisit if on-device power/accuracy
-soaks on the Galaxy A36 say the cost is too high; that would be a
-dependency decision for Caleb, not a silent swap.
-
-## What is real vs stubbed — explicit
-
-| Piece | State |
+| Capability | State |
 |---|---|
-| Pure-Kotlin core (`guardianlink.v2.core`): ledger, standing questions, conversation, governed actions, registries, audit, sync | **Real.** Faithful port of the verified TS core, semantics matched file-by-file. Hash compatibility is pinned by known-answer tests generated from the TS core itself (see Tests). |
-| Persistence (`StateStore`, `JsonParser`, storage interface + in-memory/file implementations) | **Real.** Full-state canonical document; atomic file writes; verify-before-trust loads with named errors. Persistence hooks added to Ledger/Audit/Questions/Registries/Actions are surgical and restore-only (no admission events, no audit side effects). |
-| Encryption at rest (`EncryptedStateStorage`) | **Real.** Keystore MasterKey + EncryptedFile per the scaffold pattern; two-slot atomicity; verified-before-commit slot flips; wired into Application startup and save points. |
-| JUnit 5 tests (38) | **Real.** The 26 from the first cut plus PersistenceTest (7) and SensorLogicTest (5); run in CI via `:android-app-v2:testDebugUnitTest`. |
-| Engine wiring (`GuardianLinkV2App`) | **Real, production posture.** `ProductionVerifiers` (real Ed25519) with all deployment ports at their deny defaults; `RailAuthorizer.DENY_ALL`; `ConciergeInterface` + `NineGates` + `DurableCapabilityStore` + `MerkleAuditLog` + file anchor, mirroring the scaffold's graph shape. |
-| Governed engine EXECUTION | **Unavailable — fails closed, by design.** `FailClosedEvidenceProvider` throws on every evidence request (see the fail-closed note below). Nothing is fabricated; the UI surfaces the refusal verbatim. |
-| Voice biometric port | **Denying.** `DenyBiometricVerifier` rejects every ceremony; enrollment throws. No synthetic-voice bootstrap (the scaffold's demo approach is not inherited). |
-| Engine identity keys | **Ephemeral in this cut.** Operator/revocation Ed25519 keypairs are generated at engine init and logged as such. Keystore-wrapped persistence is required before any real assent can bind to them — and is moot until evidence exists. (The CORE state is persisted and encrypted as of this slice; the ENGINE keys are a separate store that does not exist yet.) |
-| Revocation feed | **Empty unless deployed.** If `filesDir/revocations.jsonl` exists it is loaded via the engine's `SignedRevocationListFeed` (a bad file aborts engine init — fail-closed); otherwise an empty feed is wired and the fact is logged. |
-| Live Now UI + conversation input | **Real.** Programmatic views; answers re-render on version change, including background admissions from the sensing service. The persistence posture (restored / fresh / FAILED with the named error) is rendered on the surface. |
-| Device-state collector | **Real.** Screen on/off/user-present, battery level + power connect/disconnect, network availability/transport. Events enter through `core.admitSensor("device_state", …)`, so core collector governance applies. |
-| Location collector | **Real (this slice).** `LocationManager` updates under the sensing FGS; provider chosen by permission + enabled state (`LocationLogic`); confidence derived from each fix's reported accuracy; last-known fix admitted and labeled as such. Permission-absent → the collector is DENIED by name in the registry and Position says so. |
-| Motion collector | **Real (this slice).** Accelerometer → gravity-removed [MotionClassifier] → still/moving transitions; step counter → [StepDeltaTracker] → accumulated step deltas. Everything it emits is DERIVED_INFERENCE (source `sensor:motion`) through an explicit assertCollecting gate — classifications are never dressed as raw observations. SENSOR_DELAY_NORMAL sampling, listeners bound to the service lifecycle. Gated on ACTIVITY_RECOGNITION (API 29+); absent → named DENIED, registers nothing. |
-| SensingService | **Real.** `specialUse|location|health` FGS; typed `startForeground` passes exactly the type subset whose prerequisites are met (API 34+); runs all three collectors, each self-reporting unavailability at the harness boundary. Boot restart via `BootReceiver` only if sensing was running. |
-| Runtime permission flow | **Real.** MainActivity requests POST_NOTIFICATIONS (33+), fine+coarse location, and ACTIVITY_RECOGNITION (29+) in one trip before starting sensing. `ACCESS_BACKGROUND_LOCATION` is deliberately NOT bundled (§d: it must be requested separately/incrementally); results reconcile collector states transition-only via `CollectorAvailability` (a sovereign pause is never overridden). |
-| Sync transport in the Kotlin core | **Object-level.** Bundles export/import with the TS merge semantics (verify root+chain, idempotent, conflict-preserving) plus a canonical-JSON write side (`SyncBundle.toCanonicalJson`). A JSON *parser* for foreign bundles is still not in the core: `JsonParser` exists now, but it was built and threat-modeled for our own state document; wiring it to untrusted foreign bundles is a separate, deliberate step. |
-| Accounts / agent plugs on Android | **Core-only.** The registries and their boundary checks are ported and tested in `guardianlink.v2.core` (and now persist); no Android UI or OAuth flow yet (Phase D per the map). |
+| Ledger (hash-chained), standing questions, conversation (classify/answer/correct/retract), actions + rails, sync bundles, audit | **Real**, JVM-tested |
+| Persistence: full harness state, encrypted at rest | **Real** (EncryptedFile/AES-256-GCM; plaintext store is tests-only) |
+| Collectors: location (framework LocationManager), motion (SensorManager) | **Real** on device; rule logic JVM-tested. Battery/device-state pending (collector interface exists) |
+| Sensors stay off | **Real**: OS permission AND core collector status both required; either one off ⇒ no collection |
+| Foreground sensing service | **Real** code; on-device survival (screen-off, reboot) is a device-test item, not yet run |
+| Engine evidence path: key custody, policy ports, translation, assent ceremony, Concierge submission, outcome write-back | **Real**, JVM-tested (see below). End-to-end `Integrated` is reachable in tests with a TEST-ONLY ZK stub; in production wiring Gate 3 denies, so execution halts at Gate 3 — by design, per ruling |
+| Engine substrate | **Real but seeded-once**: the substrate is the core projection taken at engine init; later core changes are not re-projected until restart (named limitation) |
+| Voice (Gate 7 θ_voice) | **Absent, honestly**: the production port never accepts — no enrolled template ⇒ `NOT_CHECKED`; a template without a real verifier ⇒ `NOT_LIVE`. Voice evidence absent ⇒ Gate 7 halts. Enrollment is the named next step; no synthetic template exists anywhere |
+| Revocation feed (Gate 8) | **Real mechanism, empty deployment**: a SignedRevocationListFeed-compatible JSON file (`revocations.json`) is loaded when present; absent file ⇒ no revocations. No list is deployed yet |
+| Accounts / plugs / sync transports | Registries and rules real; transports are local (file-grade) — no network sync yet |
 
-## The fail-closed wiring decision
+## The engine evidence path (this slice)
 
-The scaffold's only working Android wiring runs `ScaffoldVerifiers`
-(every check returns true) and `RailAuthorizer.PERMISSIVE` — a posture
-that LOOKS governed while passing everything (PORT-MAP §f risk 1). This
-module takes the opposite branch at every seam:
+### The assent ceremony (EVIDENCE-PATH steps 1–6)
 
-1. `ProductionVerifiers` is wired with real keys, and every injected
-   port is left at the class's own fail-closed default: ZK denies,
-   boundary denies, policy denies, divergence is +Inf, meta-loop denies.
-2. `PolicyEngine` gets `RailAuthorizer.DENY_ALL`: no hard rail can be
-   armed until a real authorizer exists.
-3. Evidence cannot be constructed at all: `FailClosedEvidenceProvider`
-   throws `EvidenceUnavailableException` before any `ActionEvidence`
-   exists. Gate 1 (Ed25519 origin signature), Gate 3 (ZK proof — no
-   prover exists), and Gate 7 (AssentCodec triple-bound signature +
-   voice ceremony against an enrolled template) are all unimplemented,
-   and placeholder bytes would be a lie with a structure.
-4. The voice port can never ACCEPT (`DenyBiometricVerifier`), so the
-   inert placeholder template NineGates requires cannot authorize.
-5. Persistence fails closed the same way: an unverifiable store loads
-   nothing, resets nothing, and is never overwritten by the session
-   that failed to verify it.
+`core/AssentCeremony.kt` builds the GateContext bundle and submits it;
+`app/GovernedActionBridge.kt` is now a thin delegate to it (the old
+throwing `FailClosedEvidenceProvider` is gone).
 
-Consequence, stated plainly: **governed engine actions cannot execute
-in this cut.** The bridge, gates, policy engine, capability store, and
-audit anchor are all real and wired; the missing piece is the evidence
-ceremony, and until it exists the system refuses — visibly — rather
-than performing governance. The v0.2 core's own governed LOCAL actions
-(standing questions, rails, collector pause, export) execute through
-the core's ActionLayer and are unaffected.
+1. **Proposal** — the core's `ActionProposal`, admitted and visible
+   before anything engine-side exists.
+2. **Translate** — `EngineTranslation.translate` produces the engine
+   `Action` (below). Unrepresentable ⇒ the ceremony refuses with the
+   named reason; nothing approximate is ever submitted.
+3. **Render shown** — `Render.render(action)` is displayed in the UI
+   before confirm; the exact string shown is the string the assent
+   signature binds.
+4. **Origin signature (Gate 1)** — at `begin`, the serialized request
+   bytes are signed with the operator private key (AssentCodec/
+   Ed25519 path the engine verifies).
+5. **Assent (Gate 7)** — at the sovereign's `confirm`, and only then,
+   `AssentCodec.sign(operatorPrivate, rendering, assentedAt, actionId)`
+   produces σ. Proofs are stamped at the same instant: empty zkProof
+   bytes (Gate 3 decides their fate) with publicInputs bound to
+   `actionId | rendering`. The ceremony refuses to submit before
+   `assentedAt + Rails.coolingWindowMs(impact)` — cooling is real time
+   on the engine clock, not a formality.
+6. **Submit** — `ConciergeInterface.submit(context)` only. The result
+   is written back into the v2 ledger verbatim: an `EXECUTION` event
+   carrying the Integrated seal root, or an `OUTCOME` event carrying
+   "HALTED at gate N: \<verbatim engine reason\>", plus audit records.
+   `MainActivity` surfaces the outcome; for a Gate-3 halt the message
+   is exactly: *"engine execution halts at Gate 3 (ZK proof system not
+   yet deployed): \<reason\>"*.
 
-## File inventory
+Honest-supply rules inside the bundle: parse-tree count comes from
+the conversation classifier and **must be exactly 1 or the ceremony
+refuses to start**; signal SNR and context entropy are supplied by
+the caller from real measurements — `begin` refuses when they are
+absent rather than fabricating values (the app derives SNR from the
+request text's content-word ratio and entropy from the Shannon
+entropy of the standing answers' Δ distribution; both are labeled
+proxies in code). Intent vectors are the classifier's ACT one-hot for
+both slots — session-scale intent drift is **not instrumented** and
+the code says so; Gate 5 therefore measures zero drift on that axis
+in this slice.
 
-Core — `src/main/kotlin/guardianlink/v2/core/` (no `android.*` imports):
+### Translation — core ⇄ engine (the heart of the slice)
 
-| File | Bytes | Contents |
+Substrate projection (`EngineTranslation.substrateFrom`), one engine
+record per core object, field names shared with the StateStore
+vocabulary:
+
+| Core object | Engine record | Fields |
 |---|---|---|
-| Canonical.kt | 3,753 | Canonical JSON serialization + SHA-256 (TS-compatible; see vectors in tests) |
-| Types.kt | 5,404 | Delta (4-valued), event/relation/polarity enums, EvidenceEvent, AdmitInput, IsoTime, V2Clock |
-| Ledger.kt | 7,018 | Append-only hash-chained evidence ledger, foreign-event merge views, chain verification, persistence restore hook |
-| Audit.kt | 3,429 | Tamper-evident audit chain (separate from the ledger), persistence restore hook |
-| Questions.kt | 17,185 | Standing-question engine: five core questions, dependency tracking, versioned answers, conflicts, persistence restore hook |
-| Actions.kt | 15,961 | ActionProposal, policy outcomes, rails, assent binding, local adapters, no-fake-execution, persistence hooks |
-| Registries.kt | 10,104 | Collectors, agent plugs (scoped, revocable), accounts; persistence hooks |
-| Sync.kt | 4,797 | Sync bundles: export/import, verification, idempotent conflict-preserving merge |
-| StateStore.kt | 24,827 | Full-state persistence: `gl-state-1` document, StateStorage interface, in-memory + atomic file storage, verify-before-trust load with named errors |
-| JsonParser.kt | 8,393 | Strict JSON parser (read side of the canonical format; duplicate keys, trailing content, and malformed numbers rejected) |
-| Conversation.kt | 26,069 | Deterministic conversational classifier (report/ask/query/correct/retract/configure/act/clarify) |
-| Harness.kt | 4,941 | `GuardianLink` facade wiring the whole core |
+| harness meta | `harness/meta` | `ledgerRoot`, `eventCount`, `schemaVersion` |
+| collector | `collector/<name>` | `status`, `purpose`, `statusReason?` |
+| standing question | `standing_question/<id>` | `delta`, `version` |
+| account | `account/<id>` | `kind`, `label`, `status`, `connected` |
+| plug | `plug/<id>` | `name`, `capabilities`, `status` |
+| rail | `rail/<id>` | `actionType`, `target`, `envelope`, `status` |
 
-Android layer — `src/main/kotlin/guardianlink/v2/app/`:
+Action translation (`EngineTranslation.translate`) covers ONLY the
+core's local action classes:
 
-| File | Bytes | Contents |
-|---|---|---|
-| GuardianLinkV2App.kt | 15,063 | Application: encrypted-store core restore + engine graph with production wiring (see above) |
-| GovernedActionBridge.kt | 5,493 | Sole-writer engine bridge (scaffold ActionDispatcher shape) + the fail-closed evidence provider |
-| MainActivity.kt | 10,509 | Live Now surface, conversational input, sensing controls + runtime permission flow, persistence status and save points |
-| SensingService.kt | 10,604 | Foreground sensing service (specialUse/location/health subset typing) running all three collectors + BootReceiver |
-| DeviceStateCollector.kt | 6,685 | The device-state collector: screen/battery/network |
-| LocationCollector.kt | 7,637 | LocationManager collector + `LocationLogic` (pure provider/confidence/claim logic) |
-| MotionCollector.kt | 8,659 | SensorManager collector + `MotionClassifier` / `StepDeltaTracker` (pure logic); derived-inference emissions only |
-| CollectorAvailability.kt | 2,579 | Transition-only reconciliation of collector registry state with OS permission grants |
-| EncryptedStateStorage.kt | 6,736 | Keystore/EncryptedFile StateStorage: two-slot atomic encrypted store, recovery posture documented in-file |
+| Core action | Engine action |
+|---|---|
+| `pause_collector` / `resume_collector` | `Write collector/<target>` with the same field map a real pause writes (status + statusReason provenance) |
+| `create_standing_question`, `set_rail` | `Write harness/meta` refreshing `ledgerRoot`/`eventCount` |
+| `export_ledger` | `Read harness/meta (ledgerRoot)` |
 
-Build/config/docs:
+Refusals (named, never approximated): action types in the core's
+DENIED set; any type with no local adapter (`send_email`, …); pause/
+resume of a collector that is not a projected record; and **all
+Deletes** — no local action class maps to one, so `Action.Delete`,
+`Action.Sequence`, and `Action.Guarded` are never produced. When a
+pause/resume seals, the ceremony reconciles the effect back into the
+core registry (the substrate and the core converge; the substrate is
+not a second source of truth).
 
-| File | Bytes | Contents |
-|---|---|---|
-| build.gradle.kts | 2,445 | namespace `guardianlink.app`, applicationId `guardianlink.app.v2`, compile/targetSdk 34, minSdk 26, deps per map §e step 2 (engine project, core-ktx 1.13.1, appcompat 1.7.0, security-crypto 1.1.0-alpha06, JUnit 5.9.2) |
-| src/main/AndroidManifest.xml | 4,632 | Launcher activity, Application class, SensingService (`specialUse|location|health` + justification property), BootReceiver; permissions per §d. Component names are fully qualified: namespace (`guardianlink.app`) ≠ class package (`guardianlink.v2.app`). `allowBackup="false"`. |
-| MODULE-INTEGRATION.md | 4,758 | Exact settings include line, workflow install, push sequence (first-cut integration; the module is live in the repo) |
-| .github-draft/apk-v0.2.yml | 2,214 | Draft workflow (already installed in the repo): unit tests, then `:android-app-v2:assembleDebug`, artifact `guardianlink-v0.2-debug-apk` |
+### Policy ports — engine gates read core governance state
 
-Tests — `src/test/kotlin/guardianlink/v2/` (JUnit 5, matching the
-engine's test stack): TestSupport.kt (611 B), LedgerTest.kt (6,016 B),
-AcceptanceTest.kt (17,418 B), PersistenceTest.kt (10,645 B),
-SensorLogicTest.kt (5,260 B).
+`core/EnginePorts.kt` (`CorePolicyPorts`), wired into
+`ProductionVerifiers`. Every port is fail-closed: any exception ⇒
+deny / maximal divergence / incoherent.
 
-## Tests: inventory mapped to spec §6
+- **Gate 2 `boundaryCheck`** — structural, from the projection: a
+  `Read` is inside the boundary iff its record was projected; a
+  `Write` iff it targets `collector/…` or `harness/meta` AND carries
+  only fields the translator itself emits (a foreign field is outside
+  the local deployment boundary); `Delete` never; `Sequence` iff
+  every step is; `Guarded` iff its action is.
+- **Gate 6 `policyCheck` + `divergenceFn`** — the action is
+  reverse-mapped to the live core proposal it translates from (the
+  translation is re-run and compared — a hand-forged action matching
+  no proposal has no policy standing). `EXECUTABLE_UNDER_RAIL` ⇒
+  pass; `NEEDS_FRESH_ASSENT` ⇒ pass only when the core holds an
+  assent event for that proposal (the sovereign's core-level assent,
+  distinct from the Gate-7 signature); everything else (denied,
+  drift-flagged, blocked-on-question, already-terminal) ⇒ deny.
+  **Divergence** is derived, never a constant:
+  `0.05 × min(conflicted standing questions, 2) + 0.05 if the
+  Trajectory answer text carries a DRIFT FLAGGED marker`, capped at
+  0.15 — under the fixed rail's ε = 0.1 for the common cases, over it
+  when conflicts and drift coincide, which is the intended semantics.
+- **Gate 5 `loopCheck`** — bundle coherence only: the context's
+  rendering equals `Render.render(action)`, every record the action
+  names exists in the substrate, intent/current vectors are
+  same-length and finite, entropy is finite, parse trees == 1. It
+  establishes that the bundle is internally consistent and binds the
+  rendering the sovereign saw. It does **not** establish that the
+  action is wise, that the substrate reflects the world, or anything
+  about provenance — those are Gates 1/6/7 and the core's job.
 
-They are **local unit tests of this Android module** and run on the JVM
-in CI via `:android-app-v2:testDebugUnitTest` (map §e step 5). The core
-under test has no Android dependencies, so the suites exercise the full
-port. 38 tests:
+### Key custody
 
-- `LedgerTest` (8): hash chain verifies + tamper detection; append-only
-  retraction; four-valued Delta never collapsed; dependency tracking;
-  inference never promoted to observation; **+ 3 known-answer vectors**
-  (canonical bytes, first-event ledger hash, first-entry audit hash)
-  generated by running the TS core — these pin cross-implementation
-  hash compatibility, not just internal consistency.
-- `AcceptanceTest` (18): §6.1 report updates answers · §6.2 live
-  conflict · §6.3 correction supersedes · §6.3 ambiguous retraction
-  clarifies · §6.4 sensor arrival (admitted sensor-kind events, as in
-  the TS suite) · §6.5 change query · §6.6 standing-question lifecycle
-  + drift · §6.7 no execution before assent · §6.8 drift-flag refusal /
-  rail execution · §6.9 stop-collecting takes effect + audited ·
-  §6.10 offline continuity · §6.11 permission denial · §6.12 no fake
-  execution · §6.13 account authority · §6.14 sync merge · §6.15 audit
-  reconstruction · §6.16 agent-plug bounds · clarify-never-guesses.
+`core/KeyCustody.kt` (pure, StateStorage-backed) + `app/KeyCustodyProvider.kt`.
 
-  Divergence from the TS suite, deliberate: §6.10/§6.14 pass the sync
-  bundle as an object instead of a JSON file round-trip (see the sync
-  row above). The semantics under test — verification, idempotence,
-  conflict preservation — are transport-independent.
-- `PersistenceTest` (7, this slice): round trip preserves the full
-  state exactly (re-serialization is byte-identical; both chains
-  verify after reload) · a state carrying a live conflict, a bound
-  retraction, a foreign event, a revoked plug, a disconnected account,
-  paused/denied collectors, and an executed proposal keeps all of it
-  through persistence, and its rail still authorizes · tampered ledger
-  content → LEDGER_CHAIN_INVALID · tampered audit content →
-  AUDIT_CHAIN_INVALID · unsupported format → named error · interrupted
-  write (torn temp file) leaves the prior good state loadable, and a
-  truncated document is rejected (PARSE_ERROR) without the failed load
-  modifying the stored bytes · absent store loads as null and an
-  untouched harness round-trips.
-- `SensorLogicTest` (5, this slice): confidence bands from fix
-  accuracy · provider-choice matrix (permissions × enabled providers)
-  · claim text (coordinates, provider, honest accuracy) · motion
-  classifier transitions (transitions only; settles back to still) ·
-  step tracker (baseline, threshold emission, counter-reset survival).
+- Two Ed25519 keypairs: **operator** (origin + assent signatures) and
+  **revocation authority** (Gate-8 list signing) — distinct by
+  construction; a custody document whose halves are the same keypair
+  is rejected at load.
+- **API 34's Android Keystore cannot serve the JCA
+  `Signature.getInstance("Ed25519")` path the engine's crypto uses**,
+  so the pairs are generated in software and the **encoded private
+  keys are stored sealed inside the existing EncryptedStateStorage**
+  (MasterKey/EncryptedFile, AES-256-GCM — the Keystore holds the
+  wrapping key, non-exportable). Public keys are stored alongside in
+  the clear (inside the same sealed document). Key id =
+  SHA-256 hex of the X.509 DER public key.
+- Every load re-verifies each pair (sign/verify probe + key-id
+  recomputation): a tampered or mismatched half fails the load with a
+  named error. The ids are also recorded in the harness state
+  document; on startup the app checks continuity between the recorded
+  ids and the loaded keys — **a swapped key fails loudly**
+  (`CONTINUITY_MISMATCH`) rather than being adopted.
+- **Loss posture**: if the sealed store exists but cannot be read,
+  custody is UNAVAILABLE — the app surfaces "engine unavailable: key
+  custody …" and governed execution stays down. Keys are generated
+  only when the store is verifiably absent (true first run). There is
+  no silent regeneration path: regenerating would orphan every prior
+  signature and revocation the sovereign ever made.
 
-## Remaining steps to CI (parent executes, on Caleb's word)
+### Gate 3 posture (user-visible)
 
-1. Mirror this staging tree over the repo's `android-app-v2/` (the
-   module, settings include, and workflow already exist there from
-   the first cut — this slice changes module files only, plus it
-   DELETES `SensorStubs.kt`).
-2. Push via the PAT `gh-put-file` route.
-3. CI run = first compilation of this slice. The log must show 38
-   tests, not 26 and not 0. Watch the CI-verify list below in order.
-4. Download the APK artifact; record its SHA-256 with the commit hash.
-5. On-device smoke on the Galaxy A36 (not CI-able): state restore
-   across an app restart (chains verify, answers intact), permission
-   trips for location/activity-recognition, FGS survival across
-   screen-off and reboot, location fixes landing in Position with
-   sensible confidences, motion transitions while walking, honest
-   degradation with each permission denied (spec §6.10/§6.11), and a
-   battery soak for the framework-location power cost.
+`ProductionVerifiers` is constructed **without** a `zkVerifier`
+argument, keeping the engine's deny default. Consequence, stated in
+the UI verbatim: governed engine execution **halts at Gate 3** for
+every action until Caleb rules otherwise (real ZK / non-ZK proof
+honestly relabeled / keep closed — EVIDENCE-PATH, Gate 3). The engine
+demo path in `MainActivity` exercises the full ceremony and shows the
+halt; it does not pretend otherwise. A TEST-ONLY ZK stub
+(`zkVerifier = { _, _ -> true }`) exists **only** in
+`EngineEvidenceTest` wiring to prove the rest of the bundle; it is
+named as such in that file and appears nowhere in production code.
 
-## CI-verify list for this slice (unverified locally — no SDK/kotlinc here)
+## Layout
 
-In addition to the first cut's list (MODULE-INTEGRATION.md §5):
+```
+src/main/kotlin/guardianlink/v2/
+  core/    pure Kotlin, zero android.* imports — JVM-testable
+    Canonical.kt Ledger.kt Questions.kt Conversation.kt Actions.kt
+    Registries.kt Sync.kt Audit.kt Types.kt Harness.kt
+    StateStore.kt JsonParser.kt
+    KeyCustody.kt         Ed25519 custody over StateStorage (sealed-at-rest by the app store)
+    EngineTranslation.kt  core ⇄ engine substrate + action translation, named refusals
+    EnginePorts.kt        Gate 2/5/6 ports derived from core governance state
+    AssentCeremony.kt     ceremony steps 1–6 + Concierge submission + ledger write-back
+  app/     Android shell
+    GuardianLinkV2App.kt  Application: stores, collectors, custody-first engine wiring
+    GovernedActionBridge.kt  proposal → ceremony (begin/confirm/submit) delegate
+    KeyCustodyProvider.kt    custody on the encrypted state store
+    VoiceBiometricPort.kt    Gate-7 port: never accepts without a real verifier + template
+    VoiceTemplateStore.kt    scaffold enrollment-format template store (GLVT)
+    EncryptedStateStorage.kt MasterKey/EncryptedFile StateStorage
+    LocationCollector.kt MotionCollector.kt DeviceStateCollector.kt
+    CollectorAvailability.kt SensingService.kt MainActivity.kt
+src/test/kotlin/guardianlink/v2/core/
+  AcceptanceTest.kt (18) LedgerTest.kt (8) PersistenceTest.kt (7)
+  EngineEvidenceTest.kt (16) TestSupport.kt
+src/test/kotlin/guardianlink/v2/app/
+  SensorLogicTest.kt (5)
+```
 
-1. `EncryptedFile` slot behavior: repeated `openFileOutput` on a
-   pre-deleted slot file, and `MasterKey.Builder(...).build()` under
-   the app's minSdk 26 (KeyGen
-...[truncated 2691 chars]
+## Tests — expected total: 54
+
+38 prior + **16 new** in `EngineEvidenceTest`: full ceremony to
+Integrated for a representable local action (TEST-ONLY ZK stub,
+named); production-wiring halt at Gate 3 with the exact user message;
+per-gate halts — G1 bad origin signature, G2 boundary deny, G6
+drift-flagged policy deny, G7 assent replay / backdated assent /
+assent for a different actionId / absent voice evidence, G8 valid
+revocation; ceremony refusals (parse trees ≠ 1, cooling window not
+elapsed); translation refusals (no-adapter, hard-constraint Delete,
+unprojected collector); divergence derived-from-signals; key custody
+round trip + StateStore identity binding; swapped-key continuity
+failure; tampered-pair load failure. Run:
+`:android-app-v2:testDebugUnitTest` — the CI log must show **54**.
+
+## CI-verify list (signatures read from engine source @ 50ae09df; compilation is CI's to confirm)
+
+1. `ProductionVerifiers` constructor — named params incl. defaults
+   for `zkVerifier`/`boundaryCheck`/`policyCheck`/`divergenceFn`/
+   `loopCheck`/`transitionFn`; constructed WITHOUT `zkVerifier` in
+   production wiring (the deny default is load-bearing).
+2. `ConciergeInterface(policyEngine, auditLog, gates, anchor,
+   initialSubstrate, issuer, permitStore)` + `submit(GateContext)`,
+   `currentSubstrate()`, `ExecutionResult.Executed/Rejected`.
+3. `NineGates(rails, verifiers, biometricVerifier, enrolledVoice,
+   clock, ledger)`; `FakeClock` in `guardianlink.gates` for tests.
+4. `AssentCodec.sign(private, rendering, assentedAtMs, actionId)`,
+   `encodeRevocation(actionId, revokedAtMs)`; `Ed25519.sign/verify`
+   and its `KeyPair` (raw 32-byte halves).
+5. `SignedRevocationListFeed.load(path, authorityPubKey)` incl. its
+   top-level `{"revocations":[…]}` JSON shape with
+   base64url-no-pad signature encoding.
+6. GateContext field order/names exactly as the data class declares
+   (the ceremony builds it with named arguments).
+7. `gateMessage` import: `guardianlink.core.gateMessage` (top-level
+   fun in Concierge.kt) — used by MainActivity's fallback surface.
+8. Scaffold voice types: `VoiceTemplate(embedding, metadata)`,
+   `SpeakerEmbedding.Vector`, `VerificationResult(score, decision,
+   liveness)` enum names.
+9. JCA `KeyFactory.getInstance("Ed25519")` + `Signature.getInstance(
+   "Ed25519")` availability on the CI JDK 17 (custody conversions).
+10. `Intent.entries` / enum entries use for the ACT one-hot vector
+    (Kotlin 2.0.21).
+
+## Not yet (named, in order)
+
+1. **Gate 3** — per Caleb's ruling: stays CLOSED until he chooses
+   (A) real ZK, (B) non-ZK proof honestly relabeled, (C) keep closed.
+2. **Voice enrollment** — production-quality enrollment UX +
+   a real UBM-backed verifier behind `VoiceBiometricPort`; until
+   then Gate 7 halts on absent voice evidence in production.
+3. **Deployed signed revocation list** — the loader is wired; no
+   list is published/deployed yet.
+4. **Substrate re-projection** — core changes after engine init are
+   not re-projected until restart; continuous projection is future
+   work (the ceremony reconciles sealed pause/resume back itself).
+5. On-device smoke: FGS survival, permission-denial paths,
+   Keystore behavior on the A36 (API 34) — device-test items.
+6. Admission-level durability (fsync ordering) for the encrypted
+   store; release signing; network sync transports; plugs runtime.
