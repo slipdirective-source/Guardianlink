@@ -17,6 +17,9 @@ import guardianlink.gates.SubstrateState
 import guardianlink.policy.PolicyEngine
 import guardianlink.policy.RailAuthorizer
 import guardianlink.v2.core.GuardianLink
+import guardianlink.v2.core.StateStorage
+import guardianlink.v2.core.StateStore
+import guardianlink.v2.core.StateStoreException
 import guardianlink.voice.AudioSample
 import guardianlink.voice.BiometricVerifier
 import guardianlink.voice.SpeakerEmbedding
@@ -37,6 +40,15 @@ import kotlin.concurrent.thread
  *    actions, registries, sync, audit. Pure Kotlin, created synchronously
  *    in [onCreate] — the conversational surface works from the first
  *    frame and never waits on the engine.
+ *
+ *    The core state is PERSISTED: restored from an encrypted store
+ *    ([EncryptedStateStorage] over StateStore) with both hash chains
+ *    verified before any of it is trusted. A store that fails
+ *    verification is a visible, named failure ([persistenceError]): the
+ *    saved bytes are not loaded, not reset, and never overwritten by
+ *    this session — the UI says so, and the in-memory core it runs on
+ *    is understood to be empty. Save points are explicit (activity
+ *    pause, completed conversation turns); see [persistCore].
  *
  * 2. The ENGINE (guardianlink.*): the NineGates governance stack, built
  *    on a background thread exactly as the scaffold's GuardianApp builds
@@ -93,6 +105,21 @@ class GuardianLinkV2App : Application() {
      */
     val coreLock = Any()
 
+    /** The encrypted state store the core was loaded from / is saved to. */
+    private var stateStorage: StateStorage? = null
+
+    /** Human-readable persistence posture, rendered by the UI. Set in [onCreate]. */
+    var persistenceStatus: String = "Persistence: not initialized yet."
+        private set
+
+    /**
+     * Non-null when the persisted state FAILED verification at startup.
+     * Fail-closed: the corrupt store is left exactly as found (never
+     * overwritten by [persistCore]), and the UI surfaces this.
+     */
+    var persistenceError: StateStoreException? = null
+        private set
+
     @Volatile
     var engineReady: Boolean = false
         private set
@@ -107,20 +134,74 @@ class GuardianLinkV2App : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        core = GuardianLink()
+        core = loadOrInitCore()
         // The Android layer's own collector: device state (screen,
         // battery, network) — see DeviceStateCollector. Registered in
         // the core so its evidence path is governed like every other
-        // collector (pause/deny take effect at the boundary).
-        core.collectors.register(
-            "device_state",
-            "Screen, battery/charging, and connectivity state of the phone",
-        )
-        // Location/motion collectors are stubs in this cut: they mark
-        // themselves unavailable in the ledger — visible in Live Now —
-        // and emit no data. Nothing is fabricated.
-        SensorStubs.markUnavailable(core)
+        // collector (pause/deny take effect at the boundary). On a
+        // restored core it is already registered with its persisted
+        // status — registering again would reset a sovereign pause.
+        if (core.collectors.get("device_state") == null) {
+            core.collectors.register(
+                "device_state",
+                "Screen, battery/charging, and connectivity state of the phone",
+            )
+        }
+        // Location/motion are real collectors now; their registry state
+        // is reconciled with the OS permission grants (a missing grant
+        // is NAMED in the standing answers, exactly as the old stubs
+        // named their absence — no data is fabricated either way).
+        CollectorAvailability.refresh(this)
         thread(name = "gl-v2-engine-init", isDaemon = true) { initEngine() }
+    }
+
+    /**
+     * Load-or-initialize the core from the encrypted state store.
+     * Verification failure is fail-closed and visible: see
+     * [persistenceError]. There is no silent reset to empty, ever.
+     */
+    private fun loadOrInitCore(): GuardianLink {
+        val storage = EncryptedStateStorage(this)
+        stateStorage = storage
+        return try {
+            val restored = StateStore.load(storage, STORE_NAME)
+            if (restored != null) {
+                persistenceStatus =
+                    "Core state restored from the encrypted store: " +
+                    "${restored.ledger.allEvents().size} events; ledger and audit chains verified."
+                Log.i(TAG, persistenceStatus)
+                restored
+            } else {
+                persistenceStatus =
+                    "No persisted core state yet; starting fresh. State is written to the encrypted store at save points."
+                GuardianLink()
+            }
+        } catch (e: StateStoreException) {
+            persistenceError = e
+            persistenceStatus =
+                "PERSISTENCE FAILURE (${e.kind}): ${e.message} " +
+                "The saved state was NOT loaded and will NOT be overwritten; " +
+                "this session runs on an empty in-memory core only."
+            Log.e(TAG, persistenceStatus, e)
+            GuardianLink()
+        }
+    }
+
+    /**
+     * Save point: serialize the full core state into the encrypted
+     * store (one atomic slot write — see EncryptedStateStorage). Called
+     * by the UI at conversation-turn completion and on pause. Refuses
+     * outright when startup verification failed, so a corrupt store is
+     * preserved for inspection instead of being paved over.
+     */
+    fun persistCore() {
+        if (persistenceError != null) return
+        val storage = stateStorage ?: return
+        try {
+            synchronized(coreLock) { StateStore.save(core, storage, STORE_NAME) }
+        } catch (t: Throwable) {
+            Log.e(TAG, "persisting core state failed", t)
+        }
     }
 
     private fun initEngine() {
@@ -227,6 +308,9 @@ class GuardianLinkV2App : Application() {
 
     companion object {
         const val TAG = "GuardianLinkV2"
+
+        /** Logical name of the harness state document in the encrypted store. */
+        const val STORE_NAME = "harness-state"
     }
 }
 
