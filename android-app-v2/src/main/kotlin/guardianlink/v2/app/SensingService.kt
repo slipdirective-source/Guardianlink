@@ -1,36 +1,50 @@
 package guardianlink.v2.app
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.core.content.ContextCompat
+import guardianlink.v2.core.AdmitInput
+import guardianlink.v2.core.CollectorStatus
+import guardianlink.v2.core.EventKind
 
 /**
  * Foreground sensing service (spec §3.1, PORT-MAP §d).
  *
- * This cut runs the device-state collector only. The service is typed
- * `specialUse` (the manifest declaration and its justification property
- * are the platform contract for a sensing FGS with no dedicated type);
- * when the location/motion collectors land, their types join the
- * manifest declaration and the startForeground call below extends to
- * exactly the types whose prerequisites are met.
+ * Runs three collectors: device state (working since the first cut),
+ * location ([LocationManager]-based, framework APIs only), and motion
+ * ([SensorManager]-based). The service is declared `specialUse` +
+ * `location` + `health` in the manifest; the typed startForeground call
+ * passes exactly the subset of types whose prerequisites are met right
+ * now (§d's subset rule): specialUse always, location only with a
+ * location grant, health only with the activity-recognition grant.
  *
  * The service owns no state of its own: collector events are admitted
- * into the v0.2 core under GuardianLinkV2App.coreLock, through
- * `admitSensor("device_state", ...)`, so collector governance
- * (pause/deny) applies at the harness boundary. If that boundary
- * refuses (collector paused/denied by the sovereign), the refusal is
- * logged and the event is dropped — never rerouted around the gate.
+ * into the v0.2 core under GuardianLinkV2App.coreLock. Location and
+ * device-state events go through `admitSensor(...)`; motion events are
+ * DERIVED (classifications and step deltas), so they enter as
+ * derived-inference events through an explicit assertCollecting gate —
+ * in both cases collector governance (pause/deny) applies at the
+ * harness boundary, and a refusal drops the event. It is never
+ * rerouted around the gate. A collector that cannot start (permission
+ * absent, no provider/sensor) names itself unavailable at that same
+ * boundary via [GuardianLink.denyCollector], so the standing answers
+ * degrade honestly instead of presenting fabricated completeness.
  */
 class SensingService : Service() {
 
-    private var collector: DeviceStateCollector? = null
+    private var deviceStateCollector: DeviceStateCollector? = null
+    private var locationCollector: LocationCollector? = null
+    private var motionCollector: MotionCollector? = null
 
     @Volatile
     private var running = false
@@ -45,22 +59,32 @@ class SensingService : Service() {
         if (running) return START_STICKY
         promoteToForeground()
         val app = application as GuardianLinkV2App
-        val c = DeviceStateCollector(this) { topic, claim ->
-            try {
-                synchronized(app.coreLock) {
-                    app.core.admitSensor("device_state", topic, claim, confidence = 0.95)
-                }
-            } catch (refused: IllegalStateException) {
-                // The harness boundary refused this evidence (collector
-                // paused/denied). Drop the event; never bypass.
-                Log.w(TAG, "evidence refused at harness boundary: ${refused.message}")
-            }
+
+        val deviceState = DeviceStateCollector(this) { topic, claim ->
+            admitObservation(app, "device_state", topic, claim, confidence = 0.95)
         }
-        collector = c
-        c.start()
+        deviceStateCollector = deviceState
+        deviceState.start()
+
+        val location = LocationCollector(
+            context = this,
+            sink = { topic, claim, confidence -> admitObservation(app, "location", topic, claim, confidence) },
+            onUnavailable = { reason -> markUnavailable(app, "location", reason) },
+        )
+        locationCollector = location
+        location.start()
+
+        val motion = MotionCollector(
+            context = this,
+            sink = { topic, claim, confidence -> admitDerived(app, topic, claim, confidence) },
+            onUnavailable = { reason -> markUnavailable(app, "motion", reason) },
+        )
+        motionCollector = motion
+        motion.start()
+
         running = true
         setWasRunning(this, true)
-        Log.i(TAG, "sensing up (device-state collector)")
+        Log.i(TAG, "sensing up (device state, location, motion — each as permitted)")
         return START_STICKY
     }
 
@@ -70,8 +94,12 @@ class SensingService : Service() {
     }
 
     private fun stopSensing() {
-        collector?.stop()
-        collector = null
+        deviceStateCollector?.stop()
+        deviceStateCollector = null
+        locationCollector?.stop()
+        locationCollector = null
+        motionCollector?.stop()
+        motionCollector = null
         if (running) {
             running = false
             setWasRunning(this, false)
@@ -81,6 +109,62 @@ class SensingService : Service() {
         stopSelf()
     }
 
+    /** Observation path: the collector's evidence enters through the governed admitSensor gate. */
+    private fun admitObservation(app: GuardianLinkV2App, collector: String, topic: String, claim: String, confidence: Double) {
+        try {
+            synchronized(app.coreLock) {
+                app.core.admitSensor(collector, topic, claim, confidence = confidence)
+            }
+        } catch (refused: IllegalStateException) {
+            // The harness boundary refused this evidence (collector
+            // paused/denied). Drop the event; never bypass.
+            Log.w(TAG, "evidence refused at harness boundary: ${refused.message}")
+        }
+    }
+
+    /**
+     * Derived-inference path (motion): same boundary discipline as
+     * [admitObservation], but the event kind tells the truth about what
+     * a classification is — DERIVED_INFERENCE from source sensor:motion,
+     * never a raw sensor observation.
+     */
+    private fun admitDerived(app: GuardianLinkV2App, topic: String, claim: String, confidence: Double) {
+        try {
+            synchronized(app.coreLock) {
+                app.core.collectors.assertCollecting("motion")
+                app.core.admit(
+                    AdmitInput(
+                        kind = EventKind.DERIVED_INFERENCE,
+                        topic = topic,
+                        claim = claim,
+                        source = "sensor:motion",
+                        confidence = confidence,
+                    ),
+                )
+            }
+        } catch (refused: IllegalStateException) {
+            Log.w(TAG, "derived evidence refused at harness boundary: ${refused.message}")
+        }
+    }
+
+    /**
+     * Name a collector unavailable in the harness (transition-only: if
+     * it is already DENIED, the fact is already in the ledger — do not
+     * mint a duplicate marker on every service start).
+     */
+    private fun markUnavailable(app: GuardianLinkV2App, collector: String, reason: String) {
+        try {
+            synchronized(app.coreLock) {
+                if (app.core.collectors.get(collector)?.status != CollectorStatus.DENIED) {
+                    app.core.denyCollector(collector, reason)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "could not mark collector $collector unavailable", t)
+        }
+        Log.w(TAG, "collector $collector unavailable: $reason")
+    }
+
     private fun promoteToForeground() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
@@ -88,19 +172,33 @@ class SensingService : Service() {
         )
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("GuardianLink v0.2")
-            .setContentText("Sensing active: device state. Collection is visible and revocable in the app.")
+            .setContentText("Sensing active: device state, location, motion (each as permitted). Collection is visible and revocable in the app.")
             .setSmallIcon(android.R.drawable.sym_def_app_icon)
             .build()
-        // startForeground MUST carry a type that is a subset of the
-        // manifest-declared types (§d). The typed overload and the
-        // SPECIAL_USE constant exist from API 34 / API 29 respectively;
-        // below that, the two-arg form is the only option.
+        // startForeground MUST carry types that are a subset of the
+        // manifest-declared types (§d), and each type's prerequisites
+        // must hold: location needs a location grant, health needs the
+        // activity-recognition grant. specialUse is always available.
+        // The typed overload exists from API 29, but the SPECIAL_USE
+        // constant only from API 34 — below 34, the two-arg form.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            if (hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) ||
+                hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+            ) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            }
+            if (hasPermission(Manifest.permission.ACTIVITY_RECOGNITION)) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
+            }
+            startForeground(NOTIF_ID, notification, types)
         } else {
             startForeground(NOTIF_ID, notification)
         }
     }
+
+    private fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     companion object {
         private const val TAG = "GlV2Sensing"
@@ -135,7 +233,11 @@ class SensingService : Service() {
  * before the reboot. BOOT_COMPLETED is one of the enumerated FGS
  * background-start exemptions (PORT-MAP §d); restarting unsensing the
  * user had stopped would violate the collection rails, so the persisted
- * flag is the authority here.
+ * flag is the authority here. Note the while-in-use consequence (§d):
+ * after a reboot the location collector can only run if its grant
+ * posture permits a boot-started location FGS (background location or
+ * the specialUse cover); when it cannot, the collector reports itself
+ * unavailable in the standing answers rather than failing the service.
  */
 class BootReceiver : android.content.BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
