@@ -13,6 +13,14 @@ import guardianlink.gates.Signal
 import guardianlink.gates.SubstrateState
 import guardianlink.gates.impactOf
 import guardianlink.gates.render
+import guardianlink.v2.core.zk.PublicInputsCodec
+import guardianlink.v2.core.zk.PublicInputsException
+import guardianlink.v2.core.zk.UnavailableZkBridge
+import guardianlink.v2.core.zk.ZkBridgeException
+import guardianlink.v2.core.zk.ZkPlanResult
+import guardianlink.v2.core.zk.ZkProvePlan
+import guardianlink.v2.core.zk.ZkProveRequest
+import guardianlink.v2.core.zk.ZkStatementAssembly
 import guardianlink.voice.AudioSample
 import java.security.PrivateKey
 
@@ -105,11 +113,21 @@ class PreparedCeremony internal constructor(
     val measurements: CeremonyMeasurements,
     /** The request's intent distribution, retained for the bundle. */
     val requestText: String,
+    /**
+     * The Gate 3 statement assembled at begin() (ZK-GATE3-DESIGN
+     * §5.1): descriptors, quantized values/ceilings, and the rail's
+     * envelope commitments and blindings. Null = the EMPTY statement
+     * (the proposal carries no governed numeric parameters); the
+     * bundle then carries the canonical vacuity marker, not a range
+     * proof. Witnesses live here, in memory only, between begin()
+     * and submit() — they are never written to the ledger, the state
+     * store, or logs (§5).
+     */
+    val zkPlan: ZkProvePlan?,
 ) {
     /** Set by confirm(); the assent triple the sovereign produced. */
     internal var assentSignature: ByteArray? = null
     internal var assentedAtMs: Long = 0L
-    internal var proofsIssuedAtMs: Long = 0L
 
     /** Earliest tau at which submit() may run: assent time + the fixed-rail cooling window for this action's computed impact. */
     fun earliestSubmitMs(rails: Rails = Rails()): Long =
@@ -130,8 +148,9 @@ class PreparedCeremony internal constructor(
  *     the exact string Gate 7 will require the bundle to carry.
  *  3. confirm(): the sovereign's confirm action. The assent signature
  *     is produced NOW via AssentCodec over (rendering, now,
- *     actionId) under the operator key (Gate 7 assent evidence), and
- *     the proofs block is stamped (issuedAt = now). Voice audio is
+ *     actionId) under the operator key (Gate 7 assent evidence) —
+ *     and NOTHING else is stamped here (§5.2: the proofs issuance
+ *     time is set at submit, when proving happens). Voice audio is
  *     supplied by the caller at submit: in this slice there is NO
  *     enrolled voice, so the app passes an empty sample and Gate 7's
  *     theta_voice halts with its reason — absent evidence, honestly
@@ -147,13 +166,24 @@ class PreparedCeremony internal constructor(
  *     sealed pause/resume is also reconciled into the core collector
  *     registry (the projection lifecycle in EngineTranslation).
  *
- * Gate 3 posture: this ceremony assembles an EMPTY zk proof with
- * public inputs bound to (actionId, rendering). Production wiring
- * leaves ProductionVerifiers' verifyZk at its deny default (Caleb's
- * ruling: Gate 3 stays closed until a proof system is chosen), so a
- * production submission halts at Gate 3 and [CeremonyOutcome.Submitted]
- * says so in exactly those terms. A proof system behind the port —
- * real ZK or otherwise — changes only what begin() assembles here.
+ * Gate 3 (ZK-GATE3-DESIGN §5): begin() additionally assembles the
+ * proof statement from the covering rail's envelope commitments —
+ * a governed parameter without a descriptor/commitment, or a
+ * parameter with no committed envelope, refuses the ceremony HERE
+ * with the named reason (the action is not Gate-3-provable).
+ * submit() proves AFTER the cooling check passes, and only then:
+ * issuedAtMs is read from the engine clock immediately before the
+ * prover bridge runs, and that single value lands in the GLZK1
+ * block, in Proofs.issuedAtMs, and in the Gate 5 coherence check
+ * (§4.2/§4.3). (Recorded discipline: a transcript-bound timestamp
+ * cannot be stamped after the proof that binds it exists, so
+ * proving time sits inside the freshness window — bounded by the
+ * §8 benchmark gate, ≤10 s target against the 60 s window; the
+ * proof can only ever be OLDER than declared by the proving time,
+ * never fresher.) A bridge that is unavailable or refuses means
+ * the submission does not happen: [CeremonyOutcome.Refused] names
+ * Gate 3 and the reason. Nothing is ever submitted with a
+ * fabricated or absent proof.
  *
  * Not thread-safe; the app serializes through the bridge, as before.
  */
@@ -193,6 +223,15 @@ class AssentCeremony(
             is TranslationResult.Refused -> return CeremonyBegin.Refused("translation refused: ${t.reason}")
             is TranslationResult.Ok -> t
         }
+        // Gate 3 statement assembly (§5.1): the covering rail's
+        // envelope commitments and descriptors for this proposal's
+        // governed parameters. Not provable = refused HERE, named —
+        // never discovered as a Gate 3 surprise after assent.
+        val coveringRail = core.actions.railCovering(proposal.actionType, proposal.target)
+        val zkPlan = when (val a = ZkStatementAssembly.planFor(coveringRail, proposal)) {
+            is ZkPlanResult.Refused -> return CeremonyBegin.Refused("Gate 3 statement refused: ${a.reason}")
+            is ZkPlanResult.Plan -> a.plan
+        }
         val action = translated.action
         val rendering = render(action)
         val actionId = "a-${clock.nowMs()}-${++seq}"
@@ -213,19 +252,21 @@ class AssentCeremony(
                 currentVector = request.currentVector,
                 measurements = request.measurements,
                 requestText = request.requestText,
+                zkPlan = zkPlan,
             ),
         )
     }
 
     /**
      * The sovereign's confirm action: produce the Gate 7 assent
-     * signature over (rendering, now, actionId) and stamp the proofs
-     * block. Returns the earliest tau at which [submit] may run.
+     * signature over (rendering, now, actionId) — and only that
+     * (§5.2: confirm no longer stamps a proofs issuance time;
+     * issuance is set at submit, when proving happens). Returns the
+     * earliest tau at which [submit] may run.
      */
     fun confirm(prepared: PreparedCeremony): Long {
         val now = clock.nowMs()
         prepared.assentedAtMs = now
-        prepared.proofsIssuedAtMs = now
         prepared.assentSignature = AssentCodec.sign(operatorPrivateKey, prepared.rendering, now, prepared.actionId)
         return prepared.earliestSubmitMs(rails)
     }
@@ -246,6 +287,19 @@ class AssentCeremony(
                 "cooling window not elapsed: assent was given at ${prepared.assentedAtMs}, the fixed rail for this action's impact opens at $earliest, and tau is $now. Nothing was submitted.",
             )
         }
+        // Prove at submit (§5.3): after the cooling check, and only
+        // then. issuedAtMs is read ONCE, immediately before proving;
+        // that value is bound into the GLZK1 block, carried as
+        // Proofs.issuedAtMs, and cross-checked by the Gate 5 port.
+        val issuedAtMs = clock.nowMs()
+        val proofs = try {
+            assembleProofs(prepared, issuedAtMs)
+        } catch (e: ZkBridgeException) {
+            return CeremonyOutcome.Refused(
+                "Gate 3 cannot be passed for ${prepared.actionId}: ${e.message} " +
+                    "Nothing was submitted — a governed action is never submitted with a fabricated or absent proof.",
+            )
+        }
         val evidence = ConciergeInterface.ActionEvidence(
             actionId = prepared.actionId,
             signal = Signal(
@@ -254,11 +308,7 @@ class AssentCeremony(
                 wellFormed = true,
             ),
             keys = KeyMaterial(message = prepared.originMessage, signature = prepared.originSignature),
-            proofs = Proofs(
-                zkProof = ByteArray(0),
-                publicInputs = "${prepared.actionId}|${prepared.rendering}".toByteArray(Charsets.UTF_8),
-                issuedAtMs = prepared.proofsIssuedAtMs,
-            ),
+            proofs = proofs,
             contextEntropyBits = prepared.measurements.contextEntropyBits!!,
             contextParseTrees = 1,
             rendering = prepared.rendering,
@@ -313,13 +363,59 @@ class AssentCeremony(
     }
 
     /**
-     * Per-gate honesty for the surface: a Gate 3 halt in production
-     * wiring has one exact meaning, and the UI says it in those words
-     * rather than leaking a gate number as if it were an explanation.
+     * Assemble the Gate 3 proofs block (§5.3). The empty statement
+     * (no governed numeric parameters) carries the canonical
+     * vacuity marker + a paramCount-0 GLZK1 block. A real statement
+     * goes through the prover bridge, and the returned block is
+     * CROSS-CHECKED against the assembled statement through the
+     * codec before anything is submitted — a bridge that returns a
+     * block bound to a different action, rendering, timestamp, or
+     * commitment set is refused here, named.
+     */
+    private fun assembleProofs(prepared: PreparedCeremony, issuedAtMs: Long): Proofs {
+        val renderingHash = PublicInputsCodec.sha256(prepared.rendering.toByteArray(Charsets.UTF_8))
+        val plan = prepared.zkPlan
+            ?: return Proofs(
+                zkProof = PublicInputsCodec.VACUITY_PROOF,
+                publicInputs = PublicInputsCodec.encode(prepared.actionId, renderingHash, issuedAtMs, emptyList()),
+                issuedAtMs = issuedAtMs,
+            )
+        val bridge = core.actions.zkBridge()
+        if (!bridge.isAvailable()) {
+            throw ZkBridgeException("${UnavailableZkBridge.REASON}; the governed submission was not proven and will not be submitted.")
+        }
+        val bundle = bridge.prove(ZkProveRequest(prepared.actionId, renderingHash, issuedAtMs, plan))
+        val parsed = try {
+            PublicInputsCodec.decode(bundle.publicInputs)
+        } catch (e: PublicInputsException) {
+            throw ZkBridgeException("the ZK prover returned an undecodable public-input block: ${e.message}")
+        }
+        if (parsed.actionId != prepared.actionId ||
+            !parsed.renderingHash.contentEquals(renderingHash) ||
+            parsed.issuedAtMs != issuedAtMs ||
+            parsed.params.size != plan.descriptors.size
+        ) {
+            throw ZkBridgeException("the ZK prover returned a public-input block that does not match the assembled statement (binding mismatch); refusing to submit")
+        }
+        for (i in plan.descriptors.indices) {
+            val p = parsed.params[i]
+            if (p.descriptor != plan.descriptors[i] || !p.envelopeCommitment.contentEquals(plan.envelopeCommitments[i])) {
+                throw ZkBridgeException("the ZK prover returned a public-input block whose parameter $i does not match the assembled statement; refusing to submit")
+            }
+        }
+        return Proofs(zkProof = bundle.proof, publicInputs = bundle.publicInputs, issuedAtMs = issuedAtMs)
+    }
+
+    /**
+     * Per-gate honesty for the surface: a Gate 3 halt says the proof
+     * did not verify, in those words, rather than leaking a gate
+     * number as if it were an explanation. The app layer refines
+     * this with the verifier's failure class (§5.4) from its reason
+     * code; the engine's reason is carried verbatim either way.
      */
     private fun userMessageForHalt(atGate: Int, reason: String): String =
         if (atGate == 3) {
-            "engine execution halts at Gate 3 (ZK proof system not yet deployed): $reason"
+            "engine execution halts at Gate 3 (ZK proof did not verify): $reason"
         } else {
             "engine execution halted at gate $atGate: $reason"
         }
