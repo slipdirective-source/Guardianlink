@@ -1,5 +1,8 @@
 package guardianlink.v2.core
 
+import guardianlink.v2.core.zk.UnavailableZkBridge
+import guardianlink.v2.core.zk.ZkProverBridge
+
 private val DEFAULT_COLLECTORS: List<Pair<String, String>> = listOf(
     "location" to "Where the phone is: position, arrival, movement",
     "motion" to "Movement/activity state of the device and its carrier",
@@ -24,6 +27,13 @@ private val DEFAULT_COLLECTORS: List<Pair<String, String>> = listOf(
 class GuardianLink(
     now: V2Clock = V2Clock { java.time.Instant.now() },
     deviceId: String = "sovereign-device",
+    /**
+     * The Gate 3 prover bridge (ZK-GATE3-DESIGN §7.1): the Android
+     * layer injects the native bridge; tests inject a fake; the
+     * default is unavailable (rails commit without envelope
+     * commitments and are named not-Gate-3-provable).
+     */
+    zkBridge: ZkProverBridge = UnavailableZkBridge,
 ) {
     val ledger: Ledger = Ledger(deviceId, now)
     val audit: AuditLog = AuditLog(now)
@@ -66,6 +76,7 @@ class GuardianLink(
                 resumeCollector = { name -> collectors.resume(name) },
                 exportLedger = { syncService.exportBundle() },
                 now = now,
+                zkBridge = zkBridge,
             ),
         )
         conversation = Conversation(
