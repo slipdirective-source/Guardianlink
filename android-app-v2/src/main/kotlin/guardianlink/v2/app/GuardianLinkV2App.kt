@@ -77,10 +77,15 @@ import kotlin.math.ln
  *   translation boundary, policy from live proposal/rail/assent state,
  *   divergence from the core's conflict/drift signals, loop from
  *   bundle coherence. No deny defaults remain on those ports.
- * - GATE 3 (ZK): left at ProductionVerifiers' DENY default, per
- *   Caleb's ruling (no proof system chosen; EVIDENCE-PATH "Gate 3
- *   decision"). Consequence, surfaced in the UI and in every ceremony
- *   outcome: submissions halt at Gate 3 with the reason stated.
+ * - GATE 3 (ZK): REAL — Caleb ruled Option A (2026-10-23), and this
+ *   cut wires it: ProductionVerifiers' zkVerifier is
+ *   [ZkVerifierWiring] over [NativeZkBridge] (uniFFI → the Rust glzk
+ *   crate, dalek Bulletproofs over Ristretto255), and the core is
+ *   constructed with the same bridge as its prover, so rails commit
+ *   envelope commitments and the ceremony proves at submit
+ *   (ZK-GATE3-DESIGN §5/§7). If the native library is absent from the
+ *   APK, the wiring returns false and submissions halt at Gate 3,
+ *   named — fail-closed, never faked.
  * - CEREMONY: [AssentCeremony] behind [GovernedActionBridge] —
  *   translation, Gate 1 origin signature under the operator key, the
  *   Render(a) string shown to the sovereign, AssentCodec assent
@@ -179,7 +184,7 @@ class GuardianLinkV2App : Application() {
         val storage = EncryptedStateStorage(this)
         stateStorage = storage
         return try {
-            val restored = StateStore.load(storage, STORE_NAME)
+            val restored = StateStore.load(storage, STORE_NAME, zkBridge = NativeZkBridge)
             if (restored != null) {
                 persistenceStatus =
                     "Core state restored from the encrypted store: " +
@@ -189,7 +194,7 @@ class GuardianLinkV2App : Application() {
             } else {
                 persistenceStatus =
                     "No persisted core state yet; starting fresh. State is written to the encrypted store at save points."
-                GuardianLink()
+                GuardianLink(zkBridge = NativeZkBridge)
             }
         } catch (e: StateStoreException) {
             persistenceError = e
@@ -198,7 +203,7 @@ class GuardianLinkV2App : Application() {
                 "The saved state was NOT loaded and will NOT be overwritten; " +
                 "this session runs on an empty in-memory core only."
             Log.e(TAG, persistenceStatus, e)
-            GuardianLink()
+            GuardianLink(zkBridge = NativeZkBridge)
         }
     }
 
@@ -330,13 +335,18 @@ class GuardianLinkV2App : Application() {
             val ports = CorePolicyPorts { core }
 
             // --- Production verifiers: real crypto + real policy ports.
-            // zkVerifier is INTENTIONALLY NOT PASSED: Gate 3 stays at
-            // the deny default per Caleb's ruling (EVIDENCE-PATH, the
-            // Gate 3 decision). Do not wire a permissive lambda here.
+            // Gate 3's zkVerifier is the REAL bridge verifier
+            // (ZK-GATE3-DESIGN section 7.2): a total wrapper over the
+            // Rust glzk verifier, enforcing the section 4.2.3 inner
+            // freshness window against the engine's own tau clock.
+            // Native absence or any FFI failure returns false there —
+            // Gate 3 halts fail-closed; there is no permissive path.
+            val zkWiring = ZkVerifierWiring(NativeZkBridge) { clock.nowMs() }
             val verifiers = ProductionVerifiers(
                 operatorKey = operatorKeyPair.public,
                 revocationAuthorityKey = revocationKeyPair.public,
                 revocationFeed = revocationFeed,
+                zkVerifier = zkWiring.asLambda(),
                 boundaryCheck = ports::boundaryCheck,
                 policyCheck = ports::policyCheck,
                 divergenceFn = ports::divergence,
@@ -376,10 +386,15 @@ class GuardianLinkV2App : Application() {
             )
 
             val ceremony = AssentCeremony(core, concierge, clock, operatorKeyPair.private)
-            bridge = GovernedActionBridge(concierge, ceremony)
+            bridge = GovernedActionBridge(concierge, ceremony, zkWiring)
             engineReady = true
+            val zkPosture = if (NativeZkBridge.isAvailable()) {
+                "Gate 3 is LIVE: governed submissions carry a Bulletproofs envelope proof (Rust glzk bridge) and halt there if it does not verify."
+            } else {
+                "Gate 3's native proof library (libglzk) is NOT loaded in this build: governed submissions halt at Gate 3, named, until the .so ships in the APK."
+            }
             engineStatus = "Engine: up — persistent key custody, policy ports live from core state, ceremony wired. " +
-                "Gate 3 is CLOSED (ZK proof system not yet deployed): governed submissions halt there with that reason. " +
+                zkPosture + " " +
                 "Voice assent is not enrolled, so Gate 7 voice evidence is absent until enrollment lands."
             Log.i(TAG, engineStatus)
         } catch (t: Throwable) {
