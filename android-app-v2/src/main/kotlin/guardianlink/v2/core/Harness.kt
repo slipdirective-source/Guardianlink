@@ -35,6 +35,18 @@ class GuardianLink(
     val actions: ActionLayer
     private val conversation: Conversation
 
+    /**
+     * Engine identity continuity (EVIDENCE-PATH key custody): the key
+     * ids of the operator and revocation-authority keypairs this
+     * harness's governed-execution history binds to. Set by the Android
+     * layer after custody loads; persisted in the state document's
+     * "identity" section so a later key swap is detected against the
+     * record (KeyCustody.checkContinuity), never silently adopted.
+     * Null = no governed engine execution has been bound yet.
+     */
+    var operatorKeyId: String? = null
+    var revocationAuthorityKeyId: String? = null
+
     init {
         questions.onVersionChange = { q, snap ->
             audit.record(
