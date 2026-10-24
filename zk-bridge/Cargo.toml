@@ -1,0 +1,28 @@
+[package]
+name = "glzk"
+version = "0.1.0"
+edition = "2021"
+license = "LicenseRef-AllRightsReserved"
+description = "GuardianLink Gate 3 (theta_zk) proof system: aggregated Bulletproofs range proofs over Ristretto255 proving rail-envelope compliance (ZK-GATE3-DESIGN.md)."
+
+[lib]
+name = "glzk"
+# cdylib for the Android .so loaded through the uniFFI-generated Kotlin
+# bindings; rlib for cargo tests and the desktop build.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bulletproofs = "=5.0.0"
+curve25519-dalek = "=4.1.3"
+merlin = "=3.0.0"
+rand = "=0.8.5"
+rand_core = "=0.6.4"
+sha2 = "=0.10.8"
+uniffi = "=0.28.3"
+
+[dev-dependencies]
+
+[profile.release]
+# The prover is the latency-critical side (design section 9); keep the
+# release profile optimized even for the desktop test build.
+opt-level = 3
