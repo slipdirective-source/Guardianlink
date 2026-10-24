@@ -76,6 +76,25 @@ class AuditLog(
 
     fun rootHash(): String = if (entries.isNotEmpty()) entries[entries.size - 1].hash else GENESIS
 
+    /**
+     * Persistence hook for [StateStore]: replace the log's entries with
+     * a previously serialized set. The chain is verified BEFORE anything
+     * is replaced — a set that does not verify is refused whole, so a
+     * failed restore leaves the current log untouched.
+     */
+    fun loadPersistedEntries(restored: List<AuditEntry>) {
+        var prev = GENESIS
+        for (e in restored) {
+            require(e.prevHash == prev) { "persisted audit chain broken at seq ${e.seq}" }
+            require(Canonical.sha256Hex(e.prevHash + "|" + Canonical.stringify(e.bodyMap())) == e.hash) {
+                "persisted audit entry seq ${e.seq} failed hash verification"
+            }
+            prev = e.hash
+        }
+        entries.clear()
+        entries.addAll(restored)
+    }
+
     companion object {
         val GENESIS: String = "0".repeat(64)
     }
