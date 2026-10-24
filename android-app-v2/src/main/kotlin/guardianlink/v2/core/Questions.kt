@@ -382,6 +382,33 @@ class QuestionEngine(
     fun recomputeAll() {
         for (q in questions.values.toList()) recompute(q)
     }
+
+    /**
+     * Persistence hook for [StateStore]: insert or replace one question
+     * with its persisted state — current snapshot, full version history,
+     * staleness, and recompute count. No recomputation happens here and
+     * [onVersionChange] does not fire: a restore reproduces the saved
+     * state, it does not re-derive it.
+     */
+    fun restoreQuestionState(
+        id: String,
+        text: String,
+        cluster: ClusterId,
+        topicPrefixes: List<String>,
+        matchTerms: List<String>,
+        priority: Int,
+        current: AnswerSnapshot,
+        history: List<AnswerSnapshot>,
+        stale: Boolean,
+        recomputeCount: Int,
+    ): StandingQuestion {
+        val q = StandingQuestion(id, text, cluster, topicPrefixes, matchTerms, priority, current)
+        q.history.addAll(history)
+        q.stale = stale
+        q.recomputeCount = recomputeCount
+        questions[id] = q
+        return q
+    }
 }
 
 /** Port of TS `extractTerms` in `src/questions.ts`. */
