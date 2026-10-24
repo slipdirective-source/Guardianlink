@@ -1268,10 +1268,10 @@ sealed class FfiZkException: kotlin.Exception() {
      */
     class OutOfDomain(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FfiZkException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     /**
@@ -1280,10 +1280,10 @@ sealed class FfiZkException: kotlin.Exception() {
      */
     class ShapeMismatch(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FfiZkException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     /**
@@ -1291,10 +1291,10 @@ sealed class FfiZkException: kotlin.Exception() {
      */
     class Internal(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : FfiZkException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
 
@@ -1331,17 +1331,17 @@ public object FfiConverterTypeFfiZkError : FfiConverterRustBuffer<FfiZkException
             is FfiZkException.OutOfDomain -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FfiZkException.ShapeMismatch -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is FfiZkException.Internal -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
         }
     }
@@ -1350,17 +1350,17 @@ public object FfiConverterTypeFfiZkError : FfiConverterRustBuffer<FfiZkException
         when(value) {
             is FfiZkException.OutOfDomain -> {
                 buf.putInt(1)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FfiZkException.ShapeMismatch -> {
                 buf.putInt(2)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is FfiZkException.Internal -> {
                 buf.putInt(3)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
