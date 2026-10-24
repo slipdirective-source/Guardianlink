@@ -128,6 +128,26 @@ class ActionLayer(private val deps: ActionDeps) {
 
     fun listRails(): List<Rail> = rails.toList()
 
+    fun allProposals(): List<ActionProposal> = proposals.values.toList()
+
+    /**
+     * Persistence hook for [StateStore]: replace rails and proposals
+     * wholesale with persisted state, including the rail sequence so
+     * future rail ids cannot collide with restored ones. No audit
+     * entries are written — a restore reproduces state; it does not
+     * re-decide anything.
+     */
+    fun loadPersistedState(restoredRails: List<Rail>, restoredProposals: List<ActionProposal>, restoredRailSeq: Int) {
+        rails.clear()
+        rails.addAll(restoredRails)
+        proposals.clear()
+        for (p in restoredProposals) proposals[p.id] = p
+        railSeq = restoredRailSeq
+    }
+
+    /** The persisted rail sequence (see [loadPersistedState]). */
+    fun railSeqValue(): Int = railSeq
+
     fun addRail(
         actionType: String,
         target: String,
