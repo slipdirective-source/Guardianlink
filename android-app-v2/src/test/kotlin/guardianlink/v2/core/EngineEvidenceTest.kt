@@ -40,10 +40,18 @@ import org.junit.jupiter.api.Test
  * TEST-ONLY ZK STUB: rigs built with zkStub = true inject
  * `zkVerifier = { _, _ -> true }` into ProductionVerifiers so the
  * bundle can be exercised past Gate 3. That stub exists ONLY in this
- * test file's wiring. Production wiring (GuardianLinkV2App) never
- * passes a zkVerifier — Gate 3 stays at the deny default — and the
- * productionWiringHaltsAtGate3 test below pins exactly that posture
- * using a ProductionVerifiers constructed with NO zk argument.
+ * test file's wiring and is distinct from the production path, which
+ * since the Gate 3 ZK cut (ZK-GATE3-DESIGN, Option A) passes
+ * ZkVerifierWiring over the native Rust bridge — exercised in
+ * ZkGate3Test through the bridge seam's test fake (FakeZkBridge) and
+ * through the unavailable bridge. The productionWiringHaltsAtGate3
+ * test below constructs ProductionVerifiers with NO zk argument and
+ * so pins the ENGINE's deny default for an unwired deployment; it is
+ * not the app's production wiring anymore.
+ *
+ * Rig cores are built with FakeZkBridge so rail commits carry Gate 3
+ * envelope commitments and ceremony begin() can assemble statements
+ * (§5.1) exactly as production does.
  *
  * The voice port in these rigs is likewise a test double
  * (AcceptingVoice) standing in for the not-yet-enrolled production
@@ -75,7 +83,7 @@ class EngineEvidenceTest {
         productionWiring: Boolean = false,
     ) {
         val coreClock = TestClock("2026-10-23T14:00:00.000Z")
-        val core = GuardianLink(now = coreClock)
+        val core = GuardianLink(now = coreClock, zkBridge = guardianlink.v2.core.zk.FakeZkBridge)
         val tau = FakeClock(1_000_000L)
         val operator: StoredKeyPair = KeyCustody.generate()
         val revocation: StoredKeyPair = KeyCustody.generate()
@@ -93,8 +101,9 @@ class EngineEvidenceTest {
                     revocationList.filter { it.actionId == actionId }
             }
             verifiers = if (productionWiring) {
-                // Exactly the production shape: NO zkVerifier argument,
-                // so Gate 3 keeps ProductionVerifiers' deny default.
+                // NO zkVerifier argument, so Gate 3 keeps
+                // ProductionVerifiers' deny default (the engine's
+                // unwired-deployment posture).
                 ProductionVerifiers(
                     operatorKey = operator.toKeyPair().public,
                     revocationAuthorityKey = revocation.toKeyPair().public,
@@ -191,10 +200,21 @@ class EngineEvidenceTest {
         ): GateContext {
             val rendering = render(action)
             val message = "direct".toByteArray(Charsets.UTF_8)
+            // The Gate 5 port cross-checks the GLZK1 block against
+            // the bundle (design section 4.3), so a hand-built
+            // context must carry a COHERENT block — the vacuity
+            // statement for these param-less direct actions.
+            val issued = tau.nowMs()
+            val block = guardianlink.v2.core.zk.PublicInputsCodec.encode(
+                actionId,
+                guardianlink.v2.core.zk.PublicInputsCodec.sha256(rendering.toByteArray(Charsets.UTF_8)),
+                issued,
+                emptyList(),
+            )
             return GateContext(
                 signal = Signal("direct".toByteArray(Charsets.UTF_8), snr = 20.0, wellFormed = true),
                 keys = KeyMaterial(message, Ed25519.sign(operator.toKeyPair().private, message)),
-                proofs = Proofs("zk".toByteArray(Charsets.UTF_8), "pub".toByteArray(Charsets.UTF_8), issuedAtMs = tau.nowMs()),
+                proofs = Proofs(guardianlink.v2.core.zk.PublicInputsCodec.VACUITY_PROOF, block, issuedAtMs = issued),
                 contextEntropyBits = 1.0,
                 contextParseTrees = 1,
                 action = action,
@@ -246,7 +266,7 @@ class EngineEvidenceTest {
         assertEquals(3, rejected.atGate)
         assertTrue(rejected.reason.contains("theta_zk"), "engine reason is verbatim theta_zk: ${rejected.reason}")
         assertTrue(
-            submitted.userMessage.startsWith("engine execution halts at Gate 3 (ZK proof system not yet deployed)"),
+            submitted.userMessage.startsWith("engine execution halts at Gate 3 (ZK proof did not verify)"),
             "user message is the exact Gate 3 sentence: ${submitted.userMessage}",
         )
         val writeBack = rig.core.ledger.allEvents().first { it.id == submitted.writeBackEventId }
