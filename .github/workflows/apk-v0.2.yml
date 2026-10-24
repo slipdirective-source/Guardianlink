@@ -81,9 +81,12 @@ jobs:
           toolchain: 1.85.0
           targets: aarch64-linux-android
       - name: Install cargo-ndk
-        # Tool pin: confirm 4.1.2 is the current cargo-ndk release at
-        # install time (CI-verify list, android-app-v2 README).
-        run: cargo install cargo-ndk --version 4.1.2 --locked
+        # Tool pin: cargo-ndk 4.1.2 requires rustc >= 1.86, but the
+        # crate is pinned to Rust 1.85.0 (curve25519-dalek 4.1.3's
+        # build script breaks on newer rustc) — 3.5.4 is the newest
+        # cargo-ndk supporting this toolchain. Verified by CI failure
+        # on 2026-10-23 (run 40048732082).
+        run: cargo install cargo-ndk --version 3.5.4 --locked
       - name: Build libglzk.so (arm64-v8a) into the module's jniLibs
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
