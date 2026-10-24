@@ -193,7 +193,18 @@ object StateStore {
                 "proposals" to gl.actions.allProposals().map { proposalToMap(it) },
             ),
         )
-        return Canonical.stringify(doc)
+        // Identity continuity (EVIDENCE-PATH key custody): the engine
+        // key ids this state binds to. Additive and OPTIONAL — emitted
+        // only once custody exists, so pre-custody documents serialize
+        // byte-identically to before, and old documents load with null
+        // ids (binds nothing; the app records the ids at first bind).
+        val identity = LinkedHashMap<String, Any?>()
+        if (gl.operatorKeyId != null || gl.revocationAuthorityKeyId != null) {
+            identity["operatorKeyId"] = gl.operatorKeyId
+            identity["revocationAuthorityKeyId"] = gl.revocationAuthorityKeyId
+        }
+        val full = if (identity.isEmpty()) doc else doc + ("identity" to identity)
+        return Canonical.stringify(full)
     }
 
     fun save(gl: GuardianLink, storage: StateStorage, name: String) {
@@ -285,7 +296,16 @@ object StateStore {
         val proposals = reqList(actionsDoc, "proposals").mapIndexed { i, raw -> proposalFromMap(asObject(raw, "proposal $i")) }
         val questionStates = reqList(doc, "questions").mapIndexed { i, raw -> questionFromMap(asObject(raw, "question $i")) }
 
+        // Identity section is optional (pre-custody documents lack it).
+        val identityDoc = doc["identity"] as? Map<*, *>
+        @Suppress("UNCHECKED_CAST")
+        val restoredOperatorKeyId = (identityDoc as? Map<String, Any?>)?.get("operatorKeyId") as? String
+        @Suppress("UNCHECKED_CAST")
+        val restoredRevocationKeyId = (identityDoc as? Map<String, Any?>)?.get("revocationAuthorityKeyId") as? String
+
         val gl = GuardianLink(now = now, deviceId = deviceId)
+        gl.operatorKeyId = restoredOperatorKeyId
+        gl.revocationAuthorityKeyId = restoredRevocationKeyId
         try {
             gl.ledger.loadPersistedState(chainEvents, foreignEvents)
             gl.audit.loadPersistedEntries(entries)
