@@ -234,11 +234,13 @@ class MainActivity : AppCompatActivity() {
      *    concierge with EMPTY voice audio — no voice is enrolled in
      *    this build, so voice evidence is absent, not faked.
      *
-     * Expected outcome in this build: the ceremony runs and the engine
-     * halts at Gate 3 — "engine execution halts at Gate 3 (ZK proof
-     * system not yet deployed)" — with the halt written back into the
-     * ledger verbatim. That is the honest posture until Caleb rules on
-     * Gate 3; nothing about this flow pretends otherwise.
+     * Expected outcome in this build: the ceremony runs end to end.
+     * The demo action (pause_collector on location, no numeric
+     * parameters) carries the Gate 3 vacuity statement; a rail-covered
+     * numeric action would carry a real Bulletproofs envelope proof.
+     * The next honest halt is Gate 7: no voice is enrolled, so voice
+     * evidence is absent and Gate 7 halts on theta_voice, with the
+     * halt written back into the ledger verbatim.
      */
     private fun tryEngineAction() {
         val bridge = app.bridge
