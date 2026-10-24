@@ -123,8 +123,8 @@ class CorePolicyPorts(private val coreProvider: () -> GuardianLink) {
         }
 
     /** Gate 5 port: internal coherence of the assembled context. */
-    fun loopCheck(context: GateContext): Boolean =
-        try {
+    fun loopCheck(context: GateContext): Boolean {
+        return try {
             if (context.rendering != render(context.action)) return false
             val named = namedRecords(context.action)
             if (!context.substrate.records.keys.containsAll(named)) return false
@@ -136,6 +136,7 @@ class CorePolicyPorts(private val coreProvider: () -> GuardianLink) {
         } catch (_: Exception) {
             false
         }
+    }
 
     /* ---------------- internals ---------------- */
 
