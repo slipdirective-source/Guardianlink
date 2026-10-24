@@ -1,5 +1,10 @@
 package guardianlink.v2.core
 
+import guardianlink.v2.core.zk.RailZkParam
+import guardianlink.v2.core.zk.RailZkRecord
+import guardianlink.v2.core.zk.UnavailableZkBridge
+import guardianlink.v2.core.zk.ZkParamDescriptor
+import guardianlink.v2.core.zk.ZkProverBridge
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -214,7 +219,12 @@ object StateStore {
     /* ---------------- load ---------------- */
 
     /** Load and verify the state stored under [name]; null when nothing is stored there. */
-    fun load(storage: StateStorage, name: String, now: V2Clock = V2Clock { java.time.Instant.now() }): GuardianLink? {
+    fun load(
+        storage: StateStorage,
+        name: String,
+        now: V2Clock = V2Clock { java.time.Instant.now() },
+        zkBridge: ZkProverBridge = UnavailableZkBridge,
+    ): GuardianLink? {
         val bytes = try {
             storage.read(name)
         } catch (e: StateStoreException) {
@@ -223,10 +233,14 @@ object StateStore {
             throw StateStoreException(StateStoreError.STORAGE_READ_FAILED, "could not read state \"$name\": ${e.message}")
         }
         if (bytes == null) return null
-        return deserialize(String(bytes, Charsets.UTF_8), now)
+        return deserialize(String(bytes, Charsets.UTF_8), now, zkBridge)
     }
 
-    fun deserialize(text: String, now: V2Clock = V2Clock { java.time.Instant.now() }): GuardianLink {
+    fun deserialize(
+        text: String,
+        now: V2Clock = V2Clock { java.time.Instant.now() },
+        zkBridge: ZkProverBridge = UnavailableZkBridge,
+    ): GuardianLink {
         val root = JsonParser.parse(text)
         val doc = asObject(root, "state document")
 
@@ -303,7 +317,7 @@ object StateStore {
         @Suppress("UNCHECKED_CAST")
         val restoredRevocationKeyId = (identityDoc as? Map<String, Any?>)?.get("revocationAuthorityKeyId") as? String
 
-        val gl = GuardianLink(now = now, deviceId = deviceId)
+        val gl = GuardianLink(now = now, deviceId = deviceId, zkBridge = zkBridge)
         gl.operatorKeyId = restoredOperatorKeyId
         gl.revocationAuthorityKeyId = restoredRevocationKeyId
         try {
@@ -504,25 +518,71 @@ object StateStore {
         connected = reqBool(m, "connected"),
     )
 
-    private fun railToMap(r: Rail): Map<String, Any?> = mapOf(
-        "id" to r.id,
-        "actionType" to r.actionType,
-        "target" to r.target,
-        "envelope" to r.envelope,
-        "active" to r.active,
-        "createdBy" to r.createdBy,
-        "createdAt" to r.createdAt,
-    )
+    private fun railToMap(r: Rail): Map<String, Any?> {
+        val base = LinkedHashMap<String, Any?>()
+        base["id"] = r.id
+        base["actionType"] = r.actionType
+        base["target"] = r.target
+        base["envelope"] = r.envelope
+        base["active"] = r.active
+        base["createdBy"] = r.createdBy
+        base["createdAt"] = r.createdAt
+        // Gate 3 record (ZK-GATE3-DESIGN section 5): additive and
+        // OPTIONAL, emitted only when the rail carries commitments —
+        // so a pre-ZK rail serializes byte-identically to before. The
+        // blinding lives ONLY here, inside the device-local state
+        // document (sealed at rest by the app's encrypted store); it
+        // is never part of a sync bundle or a ledger record.
+        val zk = r.zk
+        if (zk != null) {
+            base["zk"] = mapOf(
+                "params" to zk.params.map { p ->
+                    mapOf<String, Any?>(
+                        "name" to p.descriptor.name,
+                        "scale" to p.descriptor.scale,
+                        "bits" to p.descriptor.bits,
+                        "offset" to p.descriptor.offset,
+                        "ceilingQ" to p.ceilingQ,
+                        "commitment" to java.util.Base64.getEncoder().encodeToString(p.envelopeCommitment),
+                        "blinding" to java.util.Base64.getEncoder().encodeToString(p.envelopeBlinding),
+                    )
+                },
+            )
+        }
+        return base
+    }
 
-    private fun railFromMap(m: Map<String, Any?>): Rail = Rail(
-        id = reqString(m, "id"),
-        actionType = reqString(m, "actionType"),
-        target = reqString(m, "target"),
-        envelope = reqObject(m, "envelope").mapValues { (_, v) -> reqNumberValue(v, "rail envelope value") },
-        active = reqBool(m, "active"),
-        createdBy = reqString(m, "createdBy"),
-        createdAt = reqString(m, "createdAt"),
-    )
+    private fun railFromMap(m: Map<String, Any?>): Rail {
+        val zkDoc = m["zk"] as? Map<*, *>
+        @Suppress("UNCHECKED_CAST")
+        val zk = (zkDoc as? Map<String, Any?>)?.let { doc ->
+            val params = reqList(doc, "params").map { raw ->
+                val pm = asObject(raw, "rail zk param")
+                RailZkParam(
+                    descriptor = ZkParamDescriptor(
+                        name = reqString(pm, "name"),
+                        scale = reqInt(pm, "scale"),
+                        bits = reqInt(pm, "bits"),
+                        offset = reqLong(pm, "offset"),
+                    ),
+                    ceilingQ = reqLong(pm, "ceilingQ"),
+                    envelopeCommitment = java.util.Base64.getDecoder().decode(reqString(pm, "commitment")),
+                    envelopeBlinding = java.util.Base64.getDecoder().decode(reqString(pm, "blinding")),
+                )
+            }
+            RailZkRecord(railId = reqString(m, "id"), params = params)
+        }
+        return Rail(
+            id = reqString(m, "id"),
+            actionType = reqString(m, "actionType"),
+            target = reqString(m, "target"),
+            envelope = reqObject(m, "envelope").mapValues { (_, v) -> reqNumberValue(v, "rail envelope value") },
+            active = reqBool(m, "active"),
+            createdBy = reqString(m, "createdBy"),
+            createdAt = reqString(m, "createdAt"),
+            zk = zk,
+        )
+    }
 
     private fun proposalToMap(p: ActionProposal): Map<String, Any?> = mapOf(
         "id" to p.id,
@@ -579,6 +639,9 @@ object StateStore {
 
     private fun reqInt(m: Map<String, Any?>, key: String): Int =
         (m[key] as? Number)?.toInt() ?: inconsistent("missing or non-numeric field \"$key\"")
+
+    private fun reqLong(m: Map<String, Any?>, key: String): Long =
+        (m[key] as? Number)?.toLong() ?: inconsistent("missing or non-numeric field \"$key\"")
 
     private fun reqDouble(m: Map<String, Any?>, key: String): Double =
         (m[key] as? Number)?.toDouble() ?: inconsistent("missing or non-numeric field \"$key\"")
