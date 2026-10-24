@@ -64,6 +64,11 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // JNA: required by the uniFFI-generated Kotlin bindings to the
+    // Rust glzk crate (src/main/kotlin/uniffi/glzk/glzk.kt) — it is
+    // the bridge's own generated dependency surface, pinned exactly.
+    // The @aar artifact is the Android variant.
+    implementation("net.java.dev.jna:jna:5.14.0@aar")
 
     // Same JUnit 5 line the engine's own tests use (root build.gradle.kts).
     testImplementation(kotlin("test"))
