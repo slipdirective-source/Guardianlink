@@ -29,18 +29,23 @@ import guardianlink.voice.AudioSample
  * null until the engine and custody are up) — not by a throwing stub
  * sitting in the production path.
  *
- * What still does NOT complete, honestly: production wiring leaves
- * Gate 3's verifyZk at deny (Caleb's ruling — no proof system chosen),
- * so a production submission halts at Gate 3 and the outcome says
- * "engine execution halts at Gate 3 (ZK proof system not yet
- * deployed)". Gate 7 voice evidence is likewise absent until
- * enrollment lands (see VoiceBiometricPort). The ceremony is real;
- * the gates it cannot yet pass halt it, by design, with their reasons
- * surfaced verbatim in the write-back.
+ * Gate 3 is REAL in this wiring (ZK-GATE3-DESIGN, Caleb's Option A
+ * ruling 2026-10-23): the ceremony proves rail-envelope compliance
+ * through the Rust glzk bridge at submit, and ProductionVerifiers'
+ * zkVerifier is the bridge verifier (see GuardianLinkV2App). A Gate 3
+ * halt here means the envelope proof did not verify; when the wiring
+ * is present, this bridge refines the outcome's user message with
+ * the verifier's failure class (parse / freshness / coherence /
+ * proof-invalid / bridge-internal) from its reason code (§5.4) —
+ * never a bare gate number. Gate 7 voice evidence is still absent
+ * until enrollment lands (see VoiceBiometricPort). The ceremony is
+ * real; the gates it cannot pass halt it, by design, with their
+ * reasons surfaced verbatim in the write-back.
  */
 class GovernedActionBridge(
     private val concierge: ConciergeInterface,
     private val ceremony: AssentCeremony,
+    private val zkWiring: ZkVerifierWiring? = null,
 ) {
 
     /** Ceremony step 1–2: translate, sign origin, produce the rendering to show the sovereign. */
@@ -57,8 +62,20 @@ class GovernedActionBridge(
 
     /** Ceremony step 4–6: assemble the bundle, submit through the concierge, write the outcome back. */
     @Synchronized
-    fun submit(prepared: PreparedCeremony, assentAudio: AudioSample): CeremonyOutcome =
-        ceremony.submit(prepared, assentAudio)
+    fun submit(prepared: PreparedCeremony, assentAudio: AudioSample): CeremonyOutcome {
+        val outcome = ceremony.submit(prepared, assentAudio)
+        val wiring = zkWiring
+        if (wiring != null && outcome is CeremonyOutcome.Submitted) {
+            val result = outcome.result
+            if (result is ConciergeInterface.ExecutionResult.Rejected && result.atGate == 3) {
+                val failureClass = guardianlink.v2.core.zk.ZkReason.className(wiring.lastReasonCode)
+                return outcome.copy(
+                    userMessage = "engine execution halts at Gate 3 (ZK proof rejected — $failureClass): ${result.reason}",
+                )
+            }
+        }
+        return outcome
+    }
 
     fun currentSubstrate(): SubstrateState = concierge.currentSubstrate()
 }
