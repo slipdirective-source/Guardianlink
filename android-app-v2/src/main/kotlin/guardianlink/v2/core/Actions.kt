@@ -1,5 +1,13 @@
 package guardianlink.v2.core
 
+import guardianlink.v2.core.zk.RailZkParam
+import guardianlink.v2.core.zk.RailZkRecord
+import guardianlink.v2.core.zk.UnavailableZkBridge
+import guardianlink.v2.core.zk.ZkBridgeException
+import guardianlink.v2.core.zk.ZkParamDescriptor
+import guardianlink.v2.core.zk.ZkProverBridge
+import guardianlink.v2.core.zk.ZkQuantization
+
 /** Port of TS `PolicyOutcome` in `src/actions.ts`; [wire] is the TS string. */
 enum class PolicyOutcome(val wire: String) {
     EXECUTABLE_UNDER_RAIL("executable_under_rail"),
@@ -38,6 +46,14 @@ data class Rail(
     val active: Boolean,
     val createdBy: String,
     val createdAt: String,
+    /**
+     * Gate 3 envelope commitments (ZK-GATE3-DESIGN §2.2/§5), computed
+     * at commit time through the ZK bridge when one is available.
+     * Null = this rail carries no commitments (committed without the
+     * bridge) and is NOT Gate-3-provable; the ceremony refuses it at
+     * begin() with that named reason rather than approximating.
+     */
+    val zk: RailZkRecord? = null,
 )
 
 enum class ProposalStatus(val wire: String) {
@@ -108,6 +124,13 @@ class ActionDeps(
     val resumeCollector: (String) -> Unit,
     val exportLedger: () -> Any?,
     val now: V2Clock,
+    /**
+     * The Gate 3 prover bridge (ZK-GATE3-DESIGN §7.1). Defaults to
+     * [UnavailableZkBridge]: rails then commit without envelope
+     * commitments and are not Gate-3-provable (named at ceremony
+     * begin, never silently).
+     */
+    val zkBridge: ZkProverBridge = UnavailableZkBridge,
 )
 
 /**
@@ -148,6 +171,12 @@ class ActionLayer(private val deps: ActionDeps) {
     /** The persisted rail sequence (see [loadPersistedState]). */
     fun railSeqValue(): Int = railSeq
 
+    /** The ZK prover bridge this layer commits envelope commitments through. */
+    fun zkBridge(): ZkProverBridge = deps.zkBridge
+
+    /** The active rail covering (actionType, target), if any — the rail a ceremony proves against. */
+    fun railCovering(actionType: String, target: String): Rail? = railFor(actionType, target)
+
     fun addRail(
         actionType: String,
         target: String,
@@ -155,14 +184,20 @@ class ActionLayer(private val deps: ActionDeps) {
         createdBy: String,
     ): Rail {
         railSeq += 1
+        val railId = "rail-$railSeq"
+        // Rail-commit commitments (ZK-GATE3-DESIGN §5): computed
+        // BEFORE the rail exists, so an unprovable envelope refuses
+        // the commit itself (§8 case 13) instead of surprising Gate 3.
+        val zk = buildZkRecord(railId, envelope)
         val rail = Rail(
-            id = "rail-$railSeq",
+            id = railId,
             actionType = actionType,
             target = target,
             envelope = envelope,
             active = true,
             createdBy = createdBy,
             createdAt = IsoTime.format(deps.now.now()),
+            zk = zk,
         )
         rails.add(rail)
         deps.audit.record(createdBy, "rail_created", mapOf("railId" to rail.id, "actionType" to actionType, "target" to target, "envelope" to envelope))
@@ -171,6 +206,40 @@ class ActionLayer(private val deps: ActionDeps) {
 
     private fun railFor(actionType: String, target: String): Rail? =
         rails.firstOrNull { r -> r.active && r.actionType == actionType && (r.target == target || r.target == "*") }
+
+    /**
+     * Compute a rail's Gate 3 record: one descriptor + quantized
+     * ceiling + Pedersen commitment per envelope parameter, in
+     * envelope order. Returns null when the envelope is empty or the
+     * bridge is unavailable (the rail then commits WITHOUT
+     * commitments and is named not-Gate-3-provable at ceremony
+     * begin). Throws IllegalArgumentException — refusing the commit —
+     * when a ceiling does not quantize into the governed domain
+     * (§2.3: an unprovable envelope is a configuration error at
+     * commit time) or the bridge fails mid-commit.
+     */
+    private fun buildZkRecord(railId: String, envelope: Map<String, Double>): RailZkRecord? {
+        if (envelope.isEmpty()) return null
+        val bridge = deps.zkBridge
+        if (!bridge.isAvailable()) return null
+        val params = mutableListOf<RailZkParam>()
+        for ((name, ceiling) in envelope) {
+            val descriptor = ZkParamDescriptor(name)
+            val ceilingQ = ZkQuantization.quantize(ceiling, descriptor)
+                ?: throw IllegalArgumentException(
+                    "rail commit refused: ceiling $ceiling for parameter "$name" does not quantize into " +
+                        "[0, 2^${descriptor.bits}) at scale ${descriptor.scale}; an unprovable envelope is a " +
+                        "configuration error at commit time (ZK-GATE3-DESIGN section 2.3).",
+                )
+            val committed = try {
+                bridge.commitCeiling(ceilingQ)
+            } catch (e: ZkBridgeException) {
+                throw IllegalArgumentException("rail commit refused: ${e.message}")
+            }
+            params.add(RailZkParam(descriptor, ceilingQ, committed.commitment, committed.blinding))
+        }
+        return RailZkRecord(railId, params)
+    }
 
     fun evaluate(input: ProposalInput): Pair<PolicyOutcome, String> {
         if (DENIED_ACTIONS.contains(input.actionType)) {
