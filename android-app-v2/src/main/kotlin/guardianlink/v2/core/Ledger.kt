@@ -13,7 +13,7 @@ package guardianlink.v2.core
  * the Android layer does so on an app-level lock.
  */
 class Ledger(
-    private val deviceId: String = "sovereign-device",
+    val deviceId: String = "sovereign-device",
     private val now: V2Clock = V2Clock { java.time.Instant.now() },
 ) {
     private val chain = mutableListOf<EvidenceEvent>()
@@ -103,6 +103,34 @@ class Ledger(
     }
 
     fun foreignEvents(): List<EvidenceEvent> = foreign.values.toList()
+
+    /**
+     * Persistence hook for [StateStore]: replace the ledger's contents
+     * with a previously serialized state. This does NOT fire admission
+     * listeners — a restore is not a series of new admissions, and it
+     * must not mint audit entries or recompute answers as a side effect
+     * (the persisted question state is restored alongside, by StateStore).
+     *
+     * The caller (StateStore) verifies before calling; this function
+     * re-verifies anyway and refuses rather than loading a broken chain:
+     * the local chain must verify end-to-end, and every foreign event
+     * must be self-consistent (its stored hash equals its recomputed
+     * hash — foreign events arrive from multiple origin chains, so no
+     * single-chain check applies to the set).
+     */
+    fun loadPersistedState(chainEvents: List<EvidenceEvent>, foreignEvents: List<EvidenceEvent>) {
+        require(verifyChainOf(chainEvents)) { "persisted ledger chain failed verification" }
+        for (e in foreignEvents) {
+            require(EvidenceEvent.computeHash(e.prevHash, e.bodyMap()) == e.hash) {
+                "persisted foreign event ${e.id} failed hash self-consistency"
+            }
+        }
+        chain.clear()
+        chain.addAll(chainEvents)
+        foreign.clear()
+        for (e in foreignEvents) foreign[e.hash] = e
+        seq = if (chainEvents.isNotEmpty()) chainEvents[chainEvents.size - 1].seq else 0
+    }
 
     fun hasHash(hash: String): Boolean = foreign.containsKey(hash) || chain.any { e -> e.hash == hash }
 
