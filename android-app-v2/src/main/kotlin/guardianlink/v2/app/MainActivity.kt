@@ -72,7 +72,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { submitConversation() }
         }
         val startSensing = Button(this).apply {
-            text = "Start sensing (device state)"
+            text = "Start sensing"
             setOnClickListener { startSensing() }
         }
         val stopSensing = Button(this).apply {
@@ -117,7 +117,31 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         handler.removeCallbacks(refreshLoop)
+        // Save point: persist the full core state to the encrypted store.
+        // persistCore refuses when startup verification failed, so a
+        // corrupt store is never paved over by a later pause.
+        app.persistCore()
         super.onPause()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_SENSING_PERMISSIONS) return
+        // A grant that just landed revives a DENIED collector; a denial
+        // keeps it named-unavailable. CollectorAvailability acts only on
+        // transitions, and a sovereign pause is never overridden.
+        CollectorAvailability.refresh(app)
+        val denied = permissions.filterIndexed { i, _ ->
+            grantResults.getOrNull(i) != PackageManager.PERMISSION_GRANTED
+        }
+        replyView.text = if (denied.isEmpty()) {
+            "Permissions granted. Collectors reconcile on the next sensing start (or immediately, in Position)."
+        } else {
+            "Denied: ${denied.joinToString(", ") { it.substringAfterLast('.') }}. " +
+                "The affected collectors are named as unavailable in Position — nothing is fabricated for them."
+        }
+        renderedSignature = "" // force re-render with the new collector states
+        renderAnswers()
     }
 
     private val app: GuardianLinkV2App get() = application as GuardianLinkV2App
@@ -133,7 +157,7 @@ class MainActivity : AppCompatActivity() {
                 else -> "Engine: up — ProductionVerifiers wired, evidence FAILS CLOSED: governed engine execution is unavailable in this cut and refuses rather than fabricating evidence."
             }
         }
-        val signature = answers.joinToString("|") { "${it.id}:${it.current.version}" } + engineLine
+        val signature = answers.joinToString("|") { "${it.id}:${it.current.version}" } + engineLine + app.persistenceStatus
         if (signature == renderedSignature) return
         renderedSignature = signature
         val sb = StringBuilder()
@@ -142,7 +166,8 @@ class MainActivity : AppCompatActivity() {
             sb.append(q.current.text).append("\n\n")
         }
         sb.append(engineLine).append("\n")
-        sb.append("Collectors unavailable in this build are named in Position above — no data is fabricated for them.")
+        sb.append(app.persistenceStatus).append("\n")
+        sb.append("Unavailable collectors are named in Position above — no data is fabricated for them.")
         answersView.text = sb.toString()
     }
 
@@ -153,6 +178,7 @@ class MainActivity : AppCompatActivity() {
         replyView.text = "…"
         thread(name = "gl-v2-conversation", isDaemon = true) {
             val result = synchronized(app.coreLock) { app.core.say(text) }
+            app.persistCore() // save point: a completed conversation turn
             runOnUiThread {
                 replyView.text = result.reply
                 renderedSignature = "" // force re-render
@@ -162,16 +188,37 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startSensing() {
-        // POST_NOTIFICATIONS is a runtime permission on API 33+ and the
-        // FGS notification must be visible (§d). Sensing itself needs
-        // no dangerous permission in this cut.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+        // Runtime permission flow (§d): POST_NOTIFICATIONS (API 33+, the
+        // FGS notification must be visible), fine/coarse location (the
+        // location collector), and ACTIVITY_RECOGNITION (API 29+, the
+        // motion collector). Everything missing is requested in one
+        // trip; whatever is denied degrades its collector honestly
+        // (named in Position) instead of blocking the others.
+        //
+        // ACCESS_BACKGROUND_LOCATION is deliberately NOT in this
+        // request: on API 30+ it must be asked for separately, after
+        // foreground location is granted, and the system ignores it when
+        // bundled (§d). A location FGS started from this visible UI
+        // keeps working after the UI leaves the foreground without it;
+        // background location becomes its own guided step when a
+        // collector actually needs it.
+        val wanted = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            wanted.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        wanted.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        wanted.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            wanted.add(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
+        val missing = wanted.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            requestPermissions(missing.toTypedArray(), REQ_SENSING_PERMISSIONS)
         }
         startForegroundService(SensingService.startIntent(this))
-        replyView.text = "Sensing started (device state). Events land in Position as they occur."
+        replyView.text = "Sensing started. Collectors report as they can; missing permissions are named in Position."
     }
 
     /**
@@ -200,6 +247,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val REFRESH_MS = 1000L
-        private const val REQ_NOTIFICATIONS = 2001
+        private const val REQ_SENSING_PERMISSIONS = 2002
     }
 }
