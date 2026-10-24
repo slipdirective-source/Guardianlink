@@ -63,6 +63,17 @@ class CollectorRegistry(
     fun deny(name: String, reason: String = "permission denied"): Collector =
         setStatus(name, CollectorStatus.DENIED, reason, "system")
 
+    /**
+     * Persistence hook for [StateStore]: replace the registry wholesale
+     * with persisted collectors. No ledger marker events are admitted
+     * and nothing is audited — a restore reproduces state, it is not a
+     * new series of collector changes.
+     */
+    fun loadPersistedState(items: List<Collector>) {
+        collectors.clear()
+        for (c in items) collectors[c.name] = c
+    }
+
     /** A collector that is not active cannot contribute evidence. */
     fun assertCollecting(name: String) {
         val c = collectors[name] ?: throw IllegalStateException("unknown collector \"$name\"")
@@ -128,6 +139,14 @@ class AgentPlugRegistry(
     }
 
     fun get(id: String): AgentPlug? = plugs[id]
+
+    fun all(): List<AgentPlug> = plugs.values.toList()
+
+    /** Persistence hook for [StateStore]: replace the registry wholesale. Not audited — a restore is not a new registration. */
+    fun loadPersistedState(items: List<AgentPlug>) {
+        plugs.clear()
+        for (p in items) plugs[p.id] = p
+    }
 
     fun revoke(id: String) {
         val plug = plugs[id] ?: throw IllegalStateException("unknown plug \"$id\"")
@@ -210,6 +229,14 @@ class AccountRegistry(private val audit: AuditLog) {
     }
 
     fun get(id: String): Account? = accounts[id]
+
+    fun all(): List<Account> = accounts.values.toList()
+
+    /** Persistence hook for [StateStore]: replace the registry wholesale. Not audited — a restore is not a new registration. */
+    fun loadPersistedState(items: List<Account>) {
+        accounts.clear()
+        for (a in items) accounts[a.id] = a
+    }
 
     fun disconnect(id: String) {
         val acct = accounts[id] ?: throw IllegalStateException("unknown account \"$id\"")
