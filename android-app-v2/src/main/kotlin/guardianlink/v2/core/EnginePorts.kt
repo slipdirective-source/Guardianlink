@@ -4,6 +4,7 @@ import guardianlink.gates.Action
 import guardianlink.gates.GateContext
 import guardianlink.gates.SubstrateState
 import guardianlink.gates.render
+import guardianlink.v2.core.zk.PublicInputsCodec
 
 /**
  * The deployment policy ports behind the engine's Gates 2, 5, and 6
@@ -59,6 +60,15 @@ import guardianlink.gates.render
  *  - intent and current vectors are same-length, non-empty, finite;
  *  - the entropy measurement is finite;
  *  - the parse-tree count is exactly 1.
+ *  - the Gate 3 cross-binding the engine cannot do (ZK-GATE3-DESIGN
+ *    §4.3): the engine treats publicInputs as opaque, so NOTHING in
+ *    NineGates compares the GLZK1 block's fields against the bundle.
+ *    This port does: the block must decode, and its actionId must
+ *    equal the context's, its renderingHash must equal SHA-256 of
+ *    the context's rendering, and its issuedAtMs must equal
+ *    Proofs.issuedAtMs. Any parse failure or mismatch is incoherent —
+ *    a proof minted for action A presented on action B dies here,
+ *    even if it would verify at Gate 3 on its own terms.
  * What it does NOT establish: that any evidence is TRUE. Truth comes
  * from the cryptographic gates and the biometric port; this port is
  * the loop's self-consistency pass, and it is documented as such
@@ -132,6 +142,17 @@ class CorePolicyPorts(private val coreProvider: () -> GuardianLink) {
             if (!context.intentVector.all { it.isFinite() } || !context.currentVector.all { it.isFinite() }) return false
             if (!context.contextEntropyBits.isFinite()) return false
             if (context.contextParseTrees != 1) return false
+            // §4.3 cross-binding: the GLZK1 block must decode and its
+            // bound fields must equal the bundle's own fields.
+            val parsed = try {
+                PublicInputsCodec.decode(context.proofs.publicInputs)
+            } catch (_: Exception) {
+                return false
+            }
+            if (parsed.actionId != context.actionId) return false
+            val renderingHash = PublicInputsCodec.sha256(context.rendering.toByteArray(Charsets.UTF_8))
+            if (!parsed.renderingHash.contentEquals(renderingHash)) return false
+            if (parsed.issuedAtMs != context.proofs.issuedAtMs) return false
             true
         } catch (_: Exception) {
             false
