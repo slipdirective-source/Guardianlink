@@ -227,7 +227,7 @@ class ActionLayer(private val deps: ActionDeps) {
             val descriptor = ZkParamDescriptor(name)
             val ceilingQ = ZkQuantization.quantize(ceiling, descriptor)
                 ?: throw IllegalArgumentException(
-                    "rail commit refused: ceiling $ceiling for parameter "$name" does not quantize into " +
+                    "rail commit refused: ceiling $ceiling for parameter '$name' does not quantize into " +
                         "[0, 2^${descriptor.bits}) at scale ${descriptor.scale}; an unprovable envelope is a " +
                         "configuration error at commit time (ZK-GATE3-DESIGN section 2.3).",
                 )
