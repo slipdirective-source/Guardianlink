@@ -7,19 +7,16 @@
   live in package guardianlink.v2.app, so relative ".Name" entries would
   resolve against the namespace and miss the classes.
 
-  Permission/FGS declarations follow ANDROID-PORT-MAP §d. This cut ships
-  ONE working collector (device state) under a specialUse foreground
-  service. Location/motion permissions are DECLARED now so the guided
-  setup flow and the collector implementations can land without manifest
-  churn — declaring a permission collects nothing by itself; the
-  location/motion collectors in this cut are honest stubs that report
-  themselves unavailable and emit no data (see SensorStubs).
-
-  When the location/motion collectors land, SensingService must also be
-  declared with foregroundServiceType "location|health" alongside
-  "specialUse" (the FOREGROUND_SERVICE_LOCATION / _HEALTH permissions
-  below are already declared for that step), and startForeground must
-  pass exactly the types whose prerequisites are met.
+  Permission/FGS declarations follow ANDROID-PORT-MAP §d. The sensing
+  service runs three collectors — device state, location
+  (LocationManager), motion (SensorManager) — and is declared
+  "specialUse|location|health": the FOREGROUND_SERVICE_LOCATION /
+  _HEALTH permissions are declared below, and startForeground passes
+  exactly the types whose prerequisites are met (specialUse always;
+  location only with a location grant; health only with the
+  activity-recognition grant). Declaring a permission collects nothing
+  by itself; a collector whose permission is absent names itself
+  unavailable in the standing answers and emits no data.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -77,10 +74,10 @@
         <service
             android:name="guardianlink.v2.app.SensingService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|location|health">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Continuous on-device context sensing (device state in this cut) feeding the sovereign's GuardianLink standing questions. All collection is rail-governed, visible in-app, and revocable; denied or unavailable sources degrade answers honestly instead of fabricating data." />
+                android:value="Continuous on-device context sensing (device state, location, motion) feeding the sovereign's GuardianLink standing questions. All collection is rail-governed, visible in-app, and revocable; denied or unavailable sources degrade answers honestly instead of fabricating data." />
         </service>
 
         <receiver
