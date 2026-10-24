@@ -14,7 +14,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import guardianlink.gates.Action
 import kotlin.concurrent.thread
 
 /**
@@ -83,7 +82,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val engineButton = Button(this).apply {
-            text = "Try governed engine action (fails closed in this cut)"
+            text = "Run governed engine action — pause location (assent ceremony)"
             setOnClickListener { tryEngineAction() }
         }
 
@@ -152,10 +151,7 @@ class MainActivity : AppCompatActivity() {
         val engineLine: String
         synchronized(app.coreLock) {
             answers = app.core.snapshot()
-            engineLine = when {
-                !app.engineReady -> "Engine: initializing… (core is live; governed engine execution not yet up)"
-                else -> "Engine: up — ProductionVerifiers wired, evidence FAILS CLOSED: governed engine execution is unavailable in this cut and refuses rather than fabricating evidence."
-            }
+            engineLine = app.engineStatus
         }
         val signature = answers.joinToString("|") { "${it.id}:${it.current.version}" } + engineLine + app.persistenceStatus
         if (signature == renderedSignature) return
@@ -222,26 +218,89 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Deliberately demonstrates the fail-closed boundary: the bridge is
-     * real, the action is a valid governed Write — and the evidence
-     * provider refuses, so nothing executes and the UI says exactly that.
+     * The real assent ceremony, end to end, for one governed action
+     * (pause the location collector):
+     *
+     * 1. A core proposal is created and the core's own assent recorded
+     *    (the conversational layer's assent record — Gate 6's port
+     *    reads it).
+     * 2. bridge.begin translates it and signs the Gate 1 origin; the
+     *    rendering is what a full UI would put in front of the
+     *    sovereign for review — here it is shown in the reply line.
+     * 3. bridge.confirm IS the sovereign's confirm: it produces the
+     *    AssentCodec assent signature at that moment.
+     * 4. The thread waits out the fixed-rail cooling window, then
+     *    bridge.submit assembles the bundle and submits through the
+     *    concierge with EMPTY voice audio — no voice is enrolled in
+     *    this build, so voice evidence is absent, not faked.
+     *
+     * Expected outcome in this build: the ceremony runs and the engine
+     * halts at Gate 3 — "engine execution halts at Gate 3 (ZK proof
+     * system not yet deployed)" — with the halt written back into the
+     * ledger verbatim. That is the honest posture until Caleb rules on
+     * Gate 3; nothing about this flow pretends otherwise.
      */
     private fun tryEngineAction() {
         val bridge = app.bridge
         if (bridge == null) {
-            replyView.text = "Engine still initializing — try again shortly."
+            replyView.text = "Engine not up: ${app.engineStatus}"
             return
         }
-        thread(name = "gl-v2-engine-demo", isDaemon = true) {
-            val text = when (val r = bridge.submit(Action.Write("v2/demo", mapOf("hello" to "governed")))) {
-                is GovernedActionBridge.BridgeResult.Executed ->
-                    "EXECUTED (unexpected in this cut) — substrate: ${r.newSubstrate.records.keys}"
-                is GovernedActionBridge.BridgeResult.Rejected ->
-                    "Rejected at gate ${r.atGate}: ${r.reason}"
-                is GovernedActionBridge.BridgeResult.DeniedEvidenceUnavailable ->
-                    "Refused (fail-closed): ${r.reason}"
+        replyView.text = "Ceremony running…"
+        thread(name = "gl-v2-engine-ceremony", isDaemon = true) {
+            val text = runDemoCeremony(bridge)
+            runOnUiThread {
+                replyView.text = text
+                renderedSignature = "" // the write-back changed standing answers
+                renderAnswers()
             }
-            runOnUiThread { replyView.text = text }
+        }
+    }
+
+    private fun runDemoCeremony(bridge: GovernedActionBridge): String {
+        val requestText = "Stop collecting location"
+        // 1. Core proposal + the core's own assent record.
+        val proposal = synchronized(app.coreLock) {
+            val p = app.core.actions.propose(
+                guardianlink.v2.core.ProposalInput(
+                    actionType = "pause_collector",
+                    target = "location",
+                    expectedEffect = "The location collector pauses.",
+                    reversibility = guardianlink.v2.core.Reversibility.REVERSIBLE,
+                    consequenceClass = guardianlink.v2.core.ConsequenceClass.LOCAL_LOW,
+                    requiredAuthority = guardianlink.v2.core.RequiredAuthority.FRESH_ASSENT,
+                    requestedBy = "sovereign",
+                ),
+            )
+            app.core.actions.recordAssent(p.id)
+            p
+        }
+        app.persistCore()
+        // 2. Begin: translation + Gate 1 origin signature + rendering.
+        val request = guardianlink.v2.core.CeremonyRequest(
+            proposalId = proposal.id,
+            requestText = requestText,
+            parseTrees = 1,
+            intentVector = app.intentDistribution(guardianlink.v2.core.Intent.ACT),
+            currentVector = app.intentDistribution(guardianlink.v2.core.Intent.ACT),
+            measurements = app.ceremonyMeasurements(requestText),
+        )
+        val prepared = when (val b = bridge.begin(request)) {
+            is guardianlink.v2.core.CeremonyBegin.Refused -> return "Ceremony refused to start: ${b.reason}"
+            is guardianlink.v2.core.CeremonyBegin.Prepared -> b.ceremony
+        }
+        // 3. Confirm = the sovereign's assent action, signature produced now.
+        val earliest = bridge.confirm(prepared)
+        // 4. Respect the cooling rail, then submit with absent voice evidence.
+        val waitMs = earliest - app.clock.nowMs()
+        if (waitMs > 0) Thread.sleep(waitMs)
+        val outcome = bridge.submit(prepared, guardianlink.voice.AudioSample(DoubleArray(0)))
+        app.persistCore()
+        return when (outcome) {
+            is guardianlink.v2.core.CeremonyOutcome.Refused ->
+                "Ceremony refused before submission: ${outcome.reason}"
+            is guardianlink.v2.core.CeremonyOutcome.Submitted ->
+                "Shown for assent: ${prepared.rendering}\n${outcome.userMessage}\n(write-back event ${outcome.writeBackEventId})"
         }
     }
 
