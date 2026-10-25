@@ -26,9 +26,31 @@ class LocalBrainPort(context: Context) : LanguagePort {
 
     @Volatile private var engine: LlmInference? = null
     @Volatile private var engineFailed = false
+    @Volatile private var breakerChecked = false
 
-    fun isReady(): Boolean =
-        BrainPrefs.preferLocal(appContext) && BrainStore.isPresent(appContext)
+    /**
+     * First touch each process: a surviving attempt marker means
+     * the last engine start killed the process (native crashes
+     * don't throw — they just end you). Trip the breaker instead
+     * of looping the crash: brain off, everything else fine, and
+     * Settings says what happened with a way back.
+     */
+    private fun checkBreaker() {
+        if (breakerChecked) return
+        breakerChecked = true
+        val marker = BrainStore.attemptMarker(appContext)
+        if (marker.exists()) {
+            marker.delete()
+            BrainPrefs.setTripped(appContext, true)
+            engineFailed = true
+        }
+    }
+
+    fun isReady(): Boolean {
+        checkBreaker()
+        return BrainPrefs.preferLocal(appContext) && BrainStore.isPresent(appContext) &&
+            !BrainPrefs.tripped(appContext)
+    }
 
     override fun parse(utterance: String): StructuredIntent? {
         if (!isReady()) return null
@@ -58,14 +80,20 @@ class LocalBrainPort(context: Context) : LanguagePort {
         synchronized(lock) {
             val eng = engine ?: run {
                 if (engineFailed) return null
+                val marker = BrainStore.attemptMarker(appContext)
+                try { marker.createNewFile() } catch (e: Exception) { /* marker is best-effort */ }
                 try {
                     val options = LlmInference.LlmInferenceOptions.builder()
                         .setModelPath(BrainStore.modelFile(appContext).absolutePath)
                         .setMaxTokens(2048)
                         .build()
-                    LlmInference.createFromOptions(appContext, options).also { engine = it }
+                    LlmInference.createFromOptions(appContext, options).also {
+                        engine = it
+                        marker.delete()
+                    }
                 } catch (t: Throwable) {
                     engineFailed = true
+                    marker.delete()
                     return null
                 }
             }
