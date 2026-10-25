@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The GL monogram, drawn as strokes so it stays crisp at any size:
+  a G whose ring is a near-full orbit arc with its crossbar, an L
+  standing inside the bowl in stardust cyan, and one nebula-pink
+  star off the ring's shoulder.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- G: orbit arc -->
+    <path
+        android:pathData="M 65.8,41.7 A 20,20 0 1 0 65.8,66.3"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round" />
+    <!-- G: crossbar with its drop -->
+    <path
+        android:pathData="M 49,54 H 68 V 63"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- L: nested in the bowl -->
+    <path
+        android:pathData="M 42,41 V 66 H 55"
+        android:strokeColor="#8FE8FF"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- the star -->
+    <path
+        android:pathData="M 72,33 A 3.2,3.2 0 1 1 78.4,33 A 3.2,3.2 0 1 1 72,33 Z"
+        android:fillColor="#FF5CA8" />
+</vector>
