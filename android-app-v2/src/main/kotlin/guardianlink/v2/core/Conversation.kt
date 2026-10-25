@@ -498,8 +498,10 @@ class Conversation(private val deps: ConversationDeps) {
             )
             return finishProposal(proposal, before, "Action proposed: call $who.")
         }
-        val textMatch = Regex("^send (?:a )?(?:text|message|sms) to\\s+(.+?)\\s+(?:saying|that says)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+        val textMatch = Regex("^(?:so\\s+)?(?:i want you to\\s+|please\\s+)?send\\s+(.+?)\\s+a\\s+(?:message|text|sms)\\s+(?:saying|telling\\s+(?:her|him|them)(?:\\s+that)?)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+            ?: Regex("^(?:please\\s+)?send (?:a )?(?:text|message|sms) to\\s+(.+?)\\s+(?:saying|that says|telling\\s+(?:her|him|them)(?:\\s+that)?)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
             ?: Regex("^text\\s+(.+?)\\s+(?:saying|that says)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+            ?: Regex("^message\\s+(.+?)\\s+(?:saying|that)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
             ?: Regex("^text\\s+(.+?)\\s*[:—]\\s*(.+)$", RegexOption.IGNORE_CASE).find(text)
         if (textMatch != null) {
             val who = textMatch.groupValues[1].trim()
@@ -517,6 +519,37 @@ class Conversation(private val deps: ConversationDeps) {
                 ),
             )
             return finishProposal(proposal, before, "Action proposed: text $who.")
+        }
+        // "tell <person> <message>" — the most natural form of all.
+        // Parsed in code, not regex: the name is one word, or two
+        // when the second is a capitalized name-part and not a
+        // pronoun/verb ("tell Shannon I love her" vs "tell Mary
+        // Jane I'll call"). "tell me…" never lands here.
+        val tellRest = Regex("^tell\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)?.groupValues?.get(1)?.trim()
+        if (tellRest != null && !lower.startsWith("tell me")) {
+            val words = tellRest.split(Regex("\\s+"))
+            val nonNameWords = setOf("i", "you", "we", "he", "she", "they", "it", "the", "a", "that", "to", "about", "whether", "if", "why", "when", "how")
+            if (words.size >= 2 && words[1].lowercase() !in setOf("about", "whether", "if", "why", "when", "how")) {
+                val twoWordName = words.size >= 3 && words[1][0].isUpperCase() && words[1].lowercase() !in nonNameWords
+                val nameWordCount = if (twoWordName) 2 else 1
+                val who = words.take(nameWordCount).joinToString(" ")
+                val body = words.drop(nameWordCount).joinToString(" ")
+                if (body.isNotBlank() && who.lowercase() != "me") {
+                    val proposal = deps.actions.propose(
+                        ProposalInput(
+                            actionType = "send_text",
+                            target = who,
+                            parameters = mapOf("to" to who, "body" to body),
+                            expectedEffect = "Send a text to $who: \"$body\"",
+                            reversibility = Reversibility.IRREVERSIBLE,
+                            consequenceClass = ConsequenceClass.EXTERNAL,
+                            requiredAuthority = RequiredAuthority.FRESH_ASSENT,
+                            requestedBy = "sovereign",
+                        ),
+                    )
+                    return finishProposal(proposal, before, "Action proposed: text $who.")
+                }
+            }
         }
         if (Regex("^send (?:a )?text\\s*\\.?$|^text\\s+\\S+\\s*\\.?$", RegexOption.IGNORE_CASE).containsMatchIn(lower) &&
             !Regex("\\b(track|collector|question)\\b").containsMatchIn(lower)
