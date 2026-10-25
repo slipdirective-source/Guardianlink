@@ -30,6 +30,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!-- Location (§d: runtime; background requested separately/incrementally) -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -151,7 +152,7 @@
         <service
             android:name="guardianlink.v2.app.SensingService"
             android:exported="false"
-            android:foregroundServiceType="specialUse|location|health">
+            android:foregroundServiceType="specialUse|location|health|microphone">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Continuous on-device context sensing (device state, location, motion) feeding the sovereign's GuardianLink standing questions. All collection is rail-governed, visible in-app, and revocable; denied or unavailable sources degrade answers honestly instead of fabricating data." />
