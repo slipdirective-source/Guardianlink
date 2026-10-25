@@ -171,6 +171,45 @@ class GuardianLinkV2App : Application() {
                 "Screen, battery/charging, and connectivity state of the phone",
             )
         }
+        // Phone-context collectors (2026-10-25, sovereign's direct
+        // ask): the mailbox he connects, the notifications his own
+        // signed-in apps post, and the phone's calendar. Same
+        // registration discipline as device_state — persisted pause
+        // or denial survives, registration never resets it.
+        if (core.collectors.get("email") == null) {
+            core.collectors.register(
+                "email",
+                "Email from the mailbox you connect in Settings",
+            )
+        }
+        if (core.collectors.get("notifications") == null) {
+            core.collectors.register(
+                "notifications",
+                "Mail and message notifications your apps post on this phone",
+            )
+        }
+        if (core.collectors.get("calendar") == null) {
+            core.collectors.register(
+                "calendar",
+                "Calendar events stored on this phone",
+            )
+        }
+        // Life-domain collectors (same ask, wider): finances ride
+        // the notification stream from banking apps plus the
+        // mailbox's receipts; health rides Health Connect, which is
+        // where watches and health apps on Android publish.
+        if (core.collectors.get("finances") == null) {
+            core.collectors.register(
+                "finances",
+                "Money movement: bank and payment app alerts, receipts in your mail",
+            )
+        }
+        if (core.collectors.get("health") == null) {
+            core.collectors.register(
+                "health",
+                "Health data from Health Connect — steps, heart rate, sleep, oxygen, weight (watch and phone)",
+            )
+        }
         // Location/motion are real collectors now; their registry state
         // is reconciled with the OS permission grants (a missing grant
         // is NAMED in the standing answers, exactly as the old stubs
@@ -188,7 +227,10 @@ class GuardianLinkV2App : Application() {
         val storage = EncryptedStateStorage(this)
         stateStorage = storage
         return try {
-            val restored = StateStore.load(storage, STORE_NAME, zkBridge = NativeZkBridge)
+            val restored = StateStore.load(
+                storage, STORE_NAME, zkBridge = NativeZkBridge,
+                deviceActionHandler = { proposal -> PhoneActions.handle(this, proposal) },
+            )
             if (restored != null) {
                 persistenceStatus =
                     "Core state restored from the encrypted store: " +
@@ -198,7 +240,7 @@ class GuardianLinkV2App : Application() {
             } else {
                 persistenceStatus =
                     "No persisted core state yet; starting fresh. State is written to the encrypted store at save points."
-                GuardianLink(zkBridge = NativeZkBridge)
+                GuardianLink(zkBridge = NativeZkBridge, deviceActionHandler = { proposal -> PhoneActions.handle(this, proposal) })
             }
         } catch (e: StateStoreException) {
             persistenceError = e
@@ -207,7 +249,7 @@ class GuardianLinkV2App : Application() {
                 "The saved state was NOT loaded and will NOT be overwritten; " +
                 "this session runs on an empty in-memory core only."
             Log.e(TAG, persistenceStatus, e)
-            GuardianLink(zkBridge = NativeZkBridge)
+            GuardianLink(zkBridge = NativeZkBridge, deviceActionHandler = { proposal -> PhoneActions.handle(this, proposal) })
         }
     }
 
