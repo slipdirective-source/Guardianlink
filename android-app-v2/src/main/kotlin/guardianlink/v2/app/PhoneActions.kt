@@ -111,8 +111,15 @@ object PhoneActions {
             if (parts.size <= 1) {
                 sms.sendTextMessage(number, null, body, sentIntent, null)
             } else {
+                // One sent-intent per part (the platform signature
+                // takes no nulls); the latch resolves on the first
+                // carrier answer.
                 val intents = ArrayList<PendingIntent>()
-                for (i in parts.indices) intents.add(if (i == 0) sentIntent else null)
+                for (i in parts.indices) {
+                    intents.add(
+                        PendingIntent.getBroadcast(context, who.hashCode() + i, Intent(action), piFlags),
+                    )
+                }
                 sms.sendMultipartTextMessage(number, null, parts, intents, null)
             }
             if (!latch.await(15, TimeUnit.SECONDS)) {
