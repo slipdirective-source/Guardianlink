@@ -288,6 +288,19 @@ class ActionLayer(private val deps: ActionDeps) {
     }
 
     fun propose(input: ProposalInput): ActionProposal {
+        // Message bodies are reframed to the recipient at the
+        // single choke point every proposal passes through (his
+        // correction, 2026-10-25): "tell Shannon I love her"
+        // proposes the text Shannon will read — "I love you" —
+        // and the review prompt and assent bind to that text.
+        val framedParams = if (input.actionType == "send_text" || input.actionType == "send_email") {
+            val body = input.parameters["body"] as? String
+            if (body != null) input.parameters + ("body" to MessageFraming.reframe(body)) else input.parameters
+        } else {
+            input.parameters
+        }
+        val framedInput = if (framedParams === input.parameters) input else input.copy(parameters = framedParams)
+        @Suppress("NAME_SHADOWING") val input = framedInput
         val (policy, reason) = evaluate(input)
         val ev = deps.ledger.admit(
             AdmitInput(
