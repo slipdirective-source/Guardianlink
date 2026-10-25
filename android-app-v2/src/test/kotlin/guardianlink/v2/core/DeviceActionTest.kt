@@ -25,7 +25,7 @@ class DeviceActionTest {
         }
         val proposal = h.say("call 8125551234")
         assertEquals(Intent.ACT, proposal.intent)
-        assertTrue(proposal.reply.contains("say-so"), "fresh assent is requested: ${proposal.reply}")
+        assertTrue(proposal.reply.startsWith("Call 8125551234?"), "the prompt is a one-line review: ${proposal.reply}")
 
         val yes = h.say("yes")
         assertEquals(true, yes.execution?.executed, "assented command executes: ${yes.reply}")
@@ -117,6 +117,18 @@ class DeviceActionTest {
         assertEquals("Shannon", seen?.parameters?.get("to"))
         val ask = h.say("tell me about Shannon")
         assertTrue(ask.intent != Intent.ACT || ask.proposal == null, "tell me stays a question: ${ask.reply}")
+    }
+
+    @Test
+    fun `the send prompt is a review of exactly what will be sent`() {
+        val h = harnessWith { DeviceOutcome("Text sent.") }
+        val r = h.say("send Shannon a text telling her I love her")
+        assertTrue(r.reply.startsWith("Send this text?"), "the prompt IS the review: ${r.reply}")
+        assertTrue(r.reply.contains("To: Shannon"), "recipient shown: ${r.reply}")
+        assertTrue(r.reply.contains("\"I love her\""), "exact body shown: ${r.reply}")
+        assertTrue(!r.reply.contains("policy") && !r.reply.contains("rail"), "no boilerplate in the prompt: ${r.reply}")
+        val no = h.say("no")
+        assertTrue(no.reply.contains("Left unexecuted"), "no drops it cleanly: ${no.reply}")
     }
 
     @Test
