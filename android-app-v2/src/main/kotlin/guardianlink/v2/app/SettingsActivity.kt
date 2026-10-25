@@ -155,6 +155,10 @@ class SettingsActivity : AppCompatActivity() {
         }
         assistantCard(palette)
 
+        // ---------------- Connected email ----------------
+        section("Connected email")
+        emailCard(palette)
+
         // ---------------- Permissions ----------------
         section("Permissions")
         navCard("Permissions", permissionsSummary()) {
@@ -360,6 +364,139 @@ class SettingsActivity : AppCompatActivity() {
         root.addView(card)
     }
 
+    /**
+     * The connected mailbox: address + IMAP app password, sealed in
+     * the Keystore-backed store. Sync admits new mail as evidence;
+     * the chat answers "what's in my email" from the record.
+     */
+    private fun emailCard(palette: GlPrefs.Palette) {
+        val card = UiKit.cardView(this, palette, 14f)
+        val store = EmailAccountStore(this)
+        val account = store.load()
+        card.addView(TextView(this).apply {
+            text = "Mailbox"
+            textSize = 15.5f
+            setTextColor(palette.textPrimary)
+        })
+        if (account == null) {
+            card.addView(bodyLine("Not connected. Connect a mailbox and GuardianLink reads new mail into your record — sender, subject, and a snippet — so your questions can draw on it.", palette))
+            card.addView(bodyLine("For Gmail: turn on 2-Step Verification, create an App Password (Google Account → Security → App passwords), and paste it here. The password is sealed on this phone and used only for IMAP sign-in.", palette))
+        } else {
+            card.addView(bodyLine("Connected: ${account.address} via ${account.host}:${account.port}", palette))
+            val lastSync = EmailSync.lastSyncAt(this)
+            if (lastSync > 0) {
+                val whenText = java.text.SimpleDateFormat("MMM d, h:mm a", java.util.Locale.US)
+                    .format(java.util.Date(lastSync))
+                card.addView(bodyLine("Last sync: $whenText", palette))
+            }
+            EmailSync.lastError(this)?.let { card.addView(bodyLine(it, palette)) }
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        row.addView(Button(this).apply {
+            text = if (account == null) "Connect a mailbox" else "Change mailbox"
+            isAllCaps = false
+            setTextColor(Color.WHITE)
+            background = UiKit.rounded(this@SettingsActivity, palette.userBubble, 999f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) }
+            setOnClickListener { showEmailDialog(account) }
+        })
+        if (account != null) {
+            row.addView(Button(this).apply {
+                text = "Fetch now"
+                isAllCaps = false
+                setTextColor(palette.userBubble)
+                background = UiKit.rounded(this@SettingsActivity, palette.chipBg, 999f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(6), 0, 0, 0) }
+                setOnClickListener {
+                    Toast.makeText(this@SettingsActivity, "Fetching mail…", Toast.LENGTH_SHORT).show()
+                    kotlin.concurrent.thread(name = "gl-email-manual", isDaemon = true) {
+                        val result = EmailSync.syncNow(this@SettingsActivity, app)
+                        runOnUiThread {
+                            Toast.makeText(
+                                this@SettingsActivity,
+                                result.error ?: "${result.admitted} new message(s) admitted.",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                            build()
+                        }
+                    }
+                }
+            })
+        }
+        card.addView(row)
+        if (account != null) {
+            card.addView(TextView(this).apply {
+                text = "Disconnect and forget the credential"
+                textSize = 13.5f
+                setTextColor(Color.parseColor("#B3261E"))
+                setPadding(0, dp(12), 0, 0)
+                setOnClickListener {
+                    EmailAccountStore(this@SettingsActivity).clear()
+                    EmailSync.forgetSeen(this@SettingsActivity)
+                    CollectorAvailability.refresh(app)
+                    build()
+                }
+            })
+        }
+        root.addView(card)
+    }
+
+    private fun showEmailDialog(existing: EmailAccount?) {
+        val palette = GlPrefs.palette(this)
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+        }
+        fun field(hint: String, initial: String, password: Boolean = false): android.widget.EditText =
+            android.widget.EditText(this).apply {
+                this.hint = hint
+                setText(initial)
+                textSize = 15f
+                if (password) {
+                    inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                }
+            }
+        val address = field("Email address", existing?.address ?: "")
+        val host = field("IMAP server", existing?.host ?: "imap.gmail.com")
+        val password = field("App password", "", password = true)
+        form.addView(address)
+        form.addView(host)
+        form.addView(password)
+        form.addView(TextView(this).apply {
+            text = "Gmail: imap.gmail.com · Outlook: outlook.office365.com · Yahoo: imap.mail.yahoo.com. Leave the password blank to keep the saved one."
+            textSize = 12.5f
+            setTextColor(palette.textSecondary)
+            setPadding(0, dp(8), 0, 0)
+        })
+        AlertDialog.Builder(this)
+            .setTitle("Connect a mailbox")
+            .setView(form)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                val addr = address.text.toString().trim()
+                val h = host.text.toString().trim().ifBlank { "imap.gmail.com" }
+                val pw = password.text.toString().trim()
+                    .ifBlank { existing?.password ?: "" }
+                if (addr.isBlank() || pw.isBlank()) {
+                    Toast.makeText(this, "Address and app password are both required.", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                EmailAccountStore(this).save(EmailAccount(addr, h, 993, pw.replace(" ", "")))
+                CollectorAvailability.refresh(app)
+                Toast.makeText(this, "Mailbox saved — fetching…", Toast.LENGTH_SHORT).show()
+                kotlin.concurrent.thread(name = "gl-email-first", isDaemon = true) {
+                    EmailSync.syncNow(this, app)
+                    runOnUiThread { build() }
+                }
+                build()
+            }
+            .show()
+    }
+
     // ------------------------------------------------------------------
 
     private fun permissionsSummary(): String {
@@ -378,6 +515,11 @@ class SettingsActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             count(ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED)
         }
+        count(NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName))
+        count(ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED)
+        count(ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED)
+        count(ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED)
+        count(ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
         return "$on of $total core grants are on. Each has its own pathway — what it's for, its state, and the shortest route to change it."
     }
 
