@@ -51,7 +51,7 @@ class SettingsActivity : AppCompatActivity() {
         // Build stamp: which build is actually running, readable at
         // a glance — install confusion costs more than the line.
         root.addView(TextView(this).apply {
-            text = "Build: 2026-10-25 · cosmic + LLM + wake + SMS fix"
+            text = "Build: 2026-10-25 · cosmic + LLM + wake + SMS fix + brain"
             textSize = 12f
             setTextColor(GlPrefs.palette(this@SettingsActivity).textSecondary)
             setPadding(0, 0, 0, dp(10))
@@ -167,9 +167,9 @@ class SettingsActivity : AppCompatActivity() {
         section("Connected email")
         emailCard(palette)
 
-        // ---------------- Language model ----------------
-        section("Language model")
-        llmCard(palette)
+        // ---------------- Brain ----------------
+        section("Brain")
+        brainCard(palette)
 
         // ---------------- Wake phrase ----------------
         section("Wake phrase")
@@ -385,50 +385,126 @@ class SettingsActivity : AppCompatActivity() {
      * the Keystore-backed store. Sync admits new mail as evidence;
      * the chat answers "what's in my email" from the record.
      */
-    private fun llmCard(palette: GlPrefs.Palette) {
+    private var brainDownloading = false
+    private var brainProgressPct = -1
+
+    /**
+     * The Brain card (his "make it easy from the app", 2026-10-25):
+     * one tap downloads our own on-device brain — no key, no
+     * account, nothing leaves the phone. The cloud key lane sits
+     * below it as an optional upgrade, not the front door.
+     */
+    private fun brainCard(palette: GlPrefs.Palette) {
         val card = UiKit.cardView(this, palette, 14f)
         val store = LlmConfigStore(this)
         val config = store.load()
+        val present = BrainStore.isPresent(this)
         card.addView(TextView(this).apply {
-            text = "Intent reader"
+            text = "GuardianLink's own brain"
             textSize = 15.5f
             setTextColor(palette.textPrimary)
         })
-        if (config == null) {
-            card.addView(bodyLine("Not connected. The built-in phrase forms carry simple commands; a language model reads everything else — any phrasing you use — and proposes the action for your say-so. It never acts itself: the same registry, review prompt, and assent apply.", palette))
-            card.addView(bodyLine("Bring your own key (OpenAI, Grok, OpenRouter, or any OpenAI-compatible endpoint). The key is sealed on this phone; utterances the forms can't read are sent to your provider for parsing.", palette))
-        } else {
-            card.addView(bodyLine("Connected: ${config.model} via ${config.baseUrl}", palette))
-            card.addView(bodyLine("Utterances no built-in form matches are read by the model; the reading is recorded as agent-derived evidence with its confidence.", palette))
+        val status = TextView(this).apply {
+            textSize = 13.5f
+            setTextColor(palette.textSecondary)
+            setPadding(0, dp(6), 0, 0)
         }
+        status.text = when {
+            brainDownloading -> "Downloading the brain…"
+            present -> "On board: ${BrainStore.MODEL_LABEL}, running entirely on this phone. Any phrasing you use gets read here first — nothing you say leaves the device."
+            else -> "Not downloaded yet. Until then, the fixed phrase forms carry simple commands. Download the brain and it reads any phrasing — proposes the action, shows it to you, fires only on your yes. Same as a cloud model, but ours: no key, no account, no network."
+        }
+        card.addView(status)
+
+        // Prefer-on-device switch.
+        val switchRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        switchRow.addView(TextView(this).apply {
+            text = "Prefer the on-device brain"
+            textSize = 14f
+            setTextColor(palette.textPrimary)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        switchRow.addView(SwitchCompat(this).apply {
+            isChecked = BrainPrefs.preferLocal(this@SettingsActivity)
+            setOnCheckedChangeListener { _, checked ->
+                BrainPrefs.setPreferLocal(this@SettingsActivity, checked)
+            }
+        })
+        card.addView(switchRow)
+
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(10), 0, 0)
         }
-        row.addView(Button(this).apply {
-            text = if (config == null) "Connect a model" else "Change model"
-            isAllCaps = false
-            setTextColor(Color.WHITE)
-            background = UiKit.rounded(this@SettingsActivity, palette.userBubble, 999f)
-            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) }
-            setOnClickListener { showLlmDialog(config) }
-        })
-        if (config != null) {
+        if (!present) {
             row.addView(Button(this).apply {
-                text = "Test reading"
+                text = if (brainDownloading) "Downloading…" else "Download the brain (1.6 GB)"
                 isAllCaps = false
-                setTextColor(palette.userBubble)
-                background = UiKit.rounded(this@SettingsActivity, palette.chipBg, 999f)
-                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(6), 0, dp(6), 0) }
+                isEnabled = !brainDownloading
+                setTextColor(Color.WHITE)
+                background = UiKit.rounded(this@SettingsActivity, palette.userBubble, 999f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                setOnClickListener { startBrainDownload(status) }
+            })
+        } else {
+            row.addView(Button(this).apply {
+                text = "Test the brain"
+                isAllCaps = false
+                setTextColor(Color.WHITE)
+                background = UiKit.rounded(this@SettingsActivity, palette.userBubble, 999f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) }
                 setOnClickListener {
-                    Toast.makeText(this@SettingsActivity, "Asking the model to read a test sentence…", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@SettingsActivity, "Asking the brain to read a test sentence… (first read warms it up)", Toast.LENGTH_SHORT).show()
                     kotlin.concurrent.thread(isDaemon = true) {
-                        val result = CloudLanguagePort(this@SettingsActivity).testReading()
+                        val result = CompositeLanguagePort(LocalBrainPort(this@SettingsActivity), CloudLanguagePort(this@SettingsActivity)).testReading()
                         runOnUiThread { Toast.makeText(this@SettingsActivity, result, Toast.LENGTH_LONG).show() }
                     }
                 }
             })
             row.addView(Button(this).apply {
+                text = "Remove"
+                isAllCaps = false
+                setTextColor(palette.userBubble)
+                background = UiKit.rounded(this@SettingsActivity, palette.chipBg, 999f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                setOnClickListener {
+                    BrainStore.remove(this@SettingsActivity)
+                    build()
+                }
+            })
+        }
+        card.addView(row)
+
+        // ---- Cloud lane: optional upgrade, no longer the front door. ----
+        card.addView(TextView(this).apply {
+            text = "Cloud brain (optional)"
+            textSize = 14f
+            setTextColor(palette.textPrimary)
+            setPadding(0, dp(16), 0, 0)
+        })
+        card.addView(bodyLine(
+            if (config == null) "Not connected. A bigger cloud model (OpenAI, Grok, OpenRouter — your own key) can read in the brain's place when the brain is off or unsure how to read something."
+            else "Connected: ${config.model} via ${config.baseUrl}. Readings are recorded as agent-derived, same as the on-device brain's.",
+            palette,
+        ))
+        val cloudRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        cloudRow.addView(Button(this).apply {
+            text = if (config == null) "Connect a cloud model" else "Change model"
+            isAllCaps = false
+            setTextColor(palette.userBubble)
+            background = UiKit.rounded(this@SettingsActivity, palette.chipBg, 999f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) }
+            setOnClickListener { showLlmDialog(config) }
+        })
+        if (config != null) {
+            cloudRow.addView(Button(this).apply {
                 text = "Disconnect"
                 isAllCaps = false
                 setTextColor(palette.userBubble)
@@ -440,8 +516,59 @@ class SettingsActivity : AppCompatActivity() {
                 }
             })
         }
-        card.addView(row)
+        card.addView(cloudRow)
         root.addView(card)
+    }
+
+    /** Streams the weights to a .part file, verifies the pinned byte size, then renames into place. */
+    private fun startBrainDownload(status: TextView) {
+        if (brainDownloading) return
+        brainDownloading = true
+        status.text = "Downloading the brain… 0%"
+        kotlin.concurrent.thread(isDaemon = true) {
+            var ok = false
+            var err: String? = null
+            try {
+                val conn = java.net.URL(BrainStore.MODEL_URL).openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 15_000
+                conn.readTimeout = 30_000
+                conn.instanceFollowRedirects = true
+                val total = conn.contentLengthLong.takeIf { it > 0 } ?: BrainStore.EXPECTED_BYTES
+                val part = BrainStore.partFile(this@SettingsActivity)
+                conn.inputStream.use { input ->
+                    part.outputStream().use { output ->
+                        val buf = ByteArray(1 shl 18)
+                        var read = 0L
+                        var n: Int
+                        while (input.read(buf).also { n = it } >= 0) {
+                            output.write(buf, 0, n)
+                            read += n
+                            val pct = (read * 100 / total).toInt().coerceIn(0, 100)
+                            if (pct != brainProgressPct) {
+                                brainProgressPct = pct
+                                runOnUiThread { status.text = "Downloading the brain… $pct%" }
+                            }
+                        }
+                    }
+                }
+                if (part.length() == BrainStore.EXPECTED_BYTES) {
+                    ok = part.renameTo(BrainStore.modelFile(this@SettingsActivity))
+                    if (!ok) err = "The download is complete but couldn't be moved into place."
+                } else {
+                    err = "The download arrived at ${part.length()} bytes instead of the expected ${BrainStore.EXPECTED_BYTES} — discarded rather than trusted. Try again on a solid connection."
+                    part.delete()
+                }
+            } catch (e: Exception) {
+                err = "Download failed: ${e.message ?: "network trouble"} — tap Download to try again."
+            }
+            brainDownloading = false
+            brainProgressPct = -1
+            runOnUiThread {
+                build()
+                if (ok) Toast.makeText(this@SettingsActivity, "Brain on board. Say anything in chat — it reads here now.", Toast.LENGTH_LONG).show()
+                else if (err != null) Toast.makeText(this@SettingsActivity, err, Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun showLlmDialog(existing: LlmConfig?) {
