@@ -40,6 +40,12 @@ class GuardianLink(
      * proposal, policy, assent, and record. See [DEVICE_ACTIONS].
      */
     deviceActionHandler: ((ActionProposal) -> DeviceOutcome)? = null,
+    /**
+     * The language port (LLM intent reader). Optional: absent means
+     * the deterministic forms alone carry conversation — the floor.
+     * See LanguagePort.kt for the contract.
+     */
+    languagePort: LanguagePort? = null,
 ) {
     val ledger: Ledger = Ledger(deviceId, now)
     val audit: AuditLog = AuditLog(now)
@@ -93,6 +99,7 @@ class GuardianLink(
                 actions = actions,
                 collectors = collectors,
                 now = now,
+                languagePort = languagePort,
             ),
         )
         // Every admission — whoever caused it — lands in the audit.
