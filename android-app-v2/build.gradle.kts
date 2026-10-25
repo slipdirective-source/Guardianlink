@@ -105,6 +105,8 @@ dependencies {
     // leaves the device (WakeWordEngine). JNA comes transitively
     // (also pinned above for the ZK bridge).
     implementation("com.alphacephei:vosk-android:0.3.47")
+    // The on-device brain (Qwen2.5-1.5B .task via MediaPipe LLM Inference).
+    implementation("com.google.mediapipe:tasks-genai:0.10.27")
 
     implementation("com.sun.mail:android-mail:1.6.7")
     implementation("com.sun.mail:android-activation:1.6.7")
