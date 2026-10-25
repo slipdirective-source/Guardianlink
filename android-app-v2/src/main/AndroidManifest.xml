@@ -77,6 +77,10 @@
             android:exported="false" />
 
         <activity
+            android:name="guardianlink.v2.app.VaultActivity"
+            android:exported="false" />
+
+        <activity
             android:name="guardianlink.v2.app.PermissionsActivity"
             android:exported="false"
             android:label="GuardianLink permissions" />
