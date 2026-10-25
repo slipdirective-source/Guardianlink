@@ -41,14 +41,16 @@ class PermissionsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val palette = GlPrefs.palette(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 28, 32, 28)
+            setBackgroundColor(palette.pageBg)
         }
         root.addView(TextView(this).apply {
             text = "Permissions"
             textSize = 20f
-            setTextColor(Color.BLACK)
+            setTextColor(palette.textPrimary)
         })
         root.addView(TextView(this).apply {
             text = "Everything GuardianLink can sense is a grant from you. " +
