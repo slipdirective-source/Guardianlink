@@ -34,6 +34,12 @@ class GuardianLink(
      * commitments and are named not-Gate-3-provable).
      */
     zkBridge: ZkProverBridge = UnavailableZkBridge,
+    /**
+     * Platform device-action handler: the Android layer injects the
+     * phone's effectors (call, text, send mail); the core keeps the
+     * proposal, policy, assent, and record. See [DEVICE_ACTIONS].
+     */
+    deviceActionHandler: ((ActionProposal) -> DeviceOutcome)? = null,
 ) {
     val ledger: Ledger = Ledger(deviceId, now)
     val audit: AuditLog = AuditLog(now)
@@ -77,6 +83,7 @@ class GuardianLink(
                 exportLedger = { syncService.exportBundle() },
                 now = now,
                 zkBridge = zkBridge,
+                deviceAction = deviceActionHandler,
             ),
         )
         conversation = Conversation(
