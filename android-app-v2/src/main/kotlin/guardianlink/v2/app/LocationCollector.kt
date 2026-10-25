@@ -74,7 +74,8 @@ object LocationLogic {
      * state. Blank parts drop out and consecutive duplicates collapse
      * (a city that is its own county seat repeats itself in the raw
      * fields). Returns null when nothing usable was resolved — the
-     * caller falls back to coordinates and says so.
+     * answer then names the absence, and the raw fix still lands in
+     * the vault on its own topic.
      */
     fun formatPlaceName(
         street: String?,
@@ -94,29 +95,33 @@ object LocationLogic {
     }
 
     /**
-     * The claim admitted for a fix when a place was resolved: the
-     * place leads (that's what a person means by "where"), the raw
-     * fix follows in parentheses as the evidence underneath it. With
-     * no place, the coordinates-only claim stands and the absence is
-     * named rather than papered over.
+     * The claim admitted on the `location` topic — the one the
+     * standing Position answer reads, and the one that shows on the
+     * main page and in checkups. It is place prose only, the way Maps
+     * answers "where am I": the raw fix (coordinates, accuracy,
+     * provider) is a metric, and metrics live in the data vault under
+     * `location.fix`, not in the answer. When no place resolved, the
+     * absence is named rather than papered over.
      */
-    fun formatPlaceClaim(
-        place: String?,
+    fun formatPlaceClaim(place: String?, lastKnown: Boolean): String {
+        val suffix = if (lastKnown) " (last known fix)" else ""
+        return if (place.isNullOrBlank()) {
+            "Position acquired — place name not resolved yet$suffix"
+        } else {
+            "You are near $place$suffix"
+        }
+    }
+
+    /** The raw fix readout, admitted on `location.fix` for the vault's Location tab. */
+    fun formatFixDetail(
         latitude: Double,
         longitude: Double,
         accuracyMeters: Double?,
         provider: String,
         lastKnown: Boolean,
     ): String {
-        val fix = formatClaim(latitude, longitude, accuracyMeters, provider)
-            .removePrefix("Location fix: ")
-            .let { "fix $it" }
-        val suffix = if (lastKnown) " (last known fix)" else ""
-        return if (place.isNullOrBlank()) {
-            "Location: place name unavailable ($fix)$suffix"
-        } else {
-            "You are near $place ($fix)$suffix"
-        }
+        val base = formatClaim(latitude, longitude, accuracyMeters, provider)
+        return if (lastKnown) "$base (last known fix)" else base
     }
 }
 
@@ -243,7 +248,12 @@ class LocationCollector(
             if (fixTime > 0L) lastDeliveredFixTime = fixTime
             sink(
                 "location",
-                LocationLogic.formatPlaceClaim(place, location.latitude, location.longitude, acc, provider, lastKnown),
+                LocationLogic.formatPlaceClaim(place, lastKnown),
+                confidence,
+            )
+            sink(
+                "location.fix",
+                LocationLogic.formatFixDetail(location.latitude, location.longitude, acc, provider, lastKnown),
                 confidence,
             )
         }
