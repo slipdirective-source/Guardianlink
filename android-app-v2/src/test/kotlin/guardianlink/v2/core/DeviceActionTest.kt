@@ -91,6 +91,16 @@ class DeviceActionTest {
     }
 
     @Test
+    fun `what can you do answers capabilities, not evidence search`() {
+        val h = harnessWith { DeviceOutcome("ok") }
+        val r = h.say("what can u do?")
+        assertEquals(Intent.QUERY, r.intent)
+        assertTrue(r.reply.contains("Here's what I can do"), "capability answer: ${r.reply}")
+        assertTrue(r.reply.contains("place a call"), "device actions named when a handler is attached: ${r.reply}")
+        assertTrue(!r.reply.contains("nothing on record about"), "never an evidence-search shrug: ${r.reply}")
+    }
+
+    @Test
     fun `bare text command clarifies instead of guessing`() {
         val h = harnessWith(null)
         val r = h.say("send a text")
