@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
@@ -19,6 +21,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import java.io.File
@@ -26,10 +29,10 @@ import kotlin.system.exitProcess
 
 /**
  * Settings — the app's one hub for everything that isn't the
- * conversation itself, the way every normal app lays it out:
- * appearance, behavior, permissions (one level down, where they
- * belong), data, and about. Every control here is wired to real
- * behavior; nothing is a decorative toggle.
+ * conversation itself, laid out the way every normal app lays it
+ * out: cards of real controls. Appearance, behavior, permissions
+ * (one level down, where they belong), data, and about. Every
+ * control here is wired to real behavior; nothing is decorative.
  */
 class SettingsActivity : AppCompatActivity() {
 
@@ -43,16 +46,46 @@ class SettingsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(36, 32, 36, 32)
+            setPadding(dp(16), dp(14), dp(16), dp(8))
         }
         val scroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f,
             )
             addView(root)
         }
-        setContentView(scroll)
+        val palette = GlPrefs.palette(this)
+        val screen = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(palette.pageBg)
+            addView(
+                LinearLayout(this@SettingsActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setBackgroundColor(palette.headerBg)
+                    elevation = dp(4).toFloat()
+                    setPadding(dp(16), dp(14), dp(16), dp(14))
+                    addView(TextView(this@SettingsActivity).apply {
+                        text = "Settings"
+                        textSize = 20f
+                        setTextColor(palette.headerText)
+                    })
+                },
+            )
+            addView(scroll)
+            addView(UiKit.bottomNav(this@SettingsActivity, palette, "settings") { target ->
+                when (target) {
+                    "chat" -> finish()
+                    "vault" -> {
+                        startActivity(Intent(this@SettingsActivity, VaultActivity::class.java))
+                        finish()
+                    }
+                }
+            })
+        }
+        setContentView(screen)
         build()
     }
 
@@ -61,148 +94,261 @@ class SettingsActivity : AppCompatActivity() {
         build()
     }
 
+    private fun dp(v: Int): Int = UiKit.dp(this, v)
+
     private fun build() {
         val palette = GlPrefs.palette(this)
         root.setBackgroundColor(palette.pageBg)
         root.removeAllViews()
 
-        root.addView(TextView(this).apply {
-            text = "Settings"
-            textSize = 22f
-            setTextColor(palette.textPrimary)
-            setPadding(0, 0, 0, 8)
-        })
-
         // ---------------- Appearance ----------------
         section("Appearance")
-        label("Theme")
+        val appearance = UiKit.cardView(this, palette)
+        appearance.addView(rowLabel("Theme"))
         val night = GlPrefs.nightMode(this)
-        root.addView(buttonRow(
-            listOf("System" to 0, "Light" to 1, "Dark" to 2).map { (name, mode) ->
-                (if (mode == night) "✓ $name" else name) to {
-                    GlPrefs.setNightMode(this, mode)
-                    recreate()
-                }
-            },
-        ))
-        label("Accent color")
-        val accent = GlPrefs.accentName(this)
-        for ((name, color) in GlPrefs.ACCENTS) {
-            root.addView(Button(this).apply {
-                text = if (name == accent) "✓ $name" else name
+        appearance.addView(optionPills(
+            listOf("System" to 0, "Light" to 1, "Dark" to 2), night,
+        ) { mode -> GlPrefs.setNightMode(this, mode); recreate() })
+        appearance.addView(rowLabel("Accent color"))
+        appearance.addView(swatchRow(palette))
+        appearance.addView(rowLabel("Chat text size"))
+        val size = GlPrefs.textSize(this)
+        appearance.addView(optionPills(
+            listOf("Small" to 0, "Default" to 1, "Large" to 2), size,
+        ) { value -> GlPrefs.setTextSize(this, value); build() })
+        root.addView(appearance)
+
+        // ---------------- Behavior ----------------
+        section("Behavior")
+        val behavior = UiKit.cardView(this, palette)
+        val autoRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(LinearLayout(this@SettingsActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(this@SettingsActivity).apply {
+                    text = "Start sensing when the app opens"
+                    textSize = 15f
+                    setTextColor(palette.textPrimary)
+                })
+                addView(TextView(this@SettingsActivity).apply {
+                    text = "Collection still follows your permission grants, every time."
+                    textSize = 12.5f
+                    setTextColor(palette.textSecondary)
+                })
+            })
+            addView(SwitchCompat(this@SettingsActivity).apply {
+                isChecked = GlPrefs.autoSense(this@SettingsActivity)
+                setOnCheckedChangeListener { _, checked -> GlPrefs.setAutoSense(this@SettingsActivity, checked) }
+            })
+        }
+        behavior.addView(autoRow)
+        root.addView(behavior)
+
+        navCard(
+            "Send a checkup notification now",
+            "The bullet-point summary of your standing answers, as a notification.",
+        ) {
+            MetricsNotifier.post(this, app)
+            Toast.makeText(this, "Checkup sent — pull down your notifications.", Toast.LENGTH_SHORT).show()
+        }
+        assistantCard(palette)
+
+        // ---------------- Permissions ----------------
+        section("Permissions")
+        navCard("Permissions", permissionsSummary()) {
+            startActivity(Intent(this, PermissionsActivity::class.java))
+        }
+
+        // ---------------- Data ----------------
+        section("Data")
+        navCard("Copy diagnostics", "Version, engine posture, key and Gate 3 state — for pasting anywhere.") {
+            copyDiagnostics()
+        }
+        navCard("Erase everything", "Deletes the encrypted state, audit anchors, and clock file, then restarts empty. No undo.", danger = true) {
+            confirmErase()
+        }
+
+        // ---------------- About ----------------
+        section("About")
+        val about = UiKit.cardView(this, palette)
+        val version = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        } catch (e: Exception) {
+            "?"
+        }
+        about.addView(bodyLine("GuardianLink v0.2 · version $version", palette))
+        about.addView(bodyLine(app.engineStatus, palette))
+        val keyId = synchronized(app.coreLock) { app.core.operatorKeyId }
+        about.addView(bodyLine("Operator key: ${keyId?.take(16) ?: "not bound yet"}…", palette))
+        root.addView(about)
+    }
+
+    // ------------------------------------------------------------------
+    // Pieces
+
+    private fun section(title: String) {
+        root.addView(TextView(this).apply {
+            text = title.uppercase()
+            textSize = 12.5f
+            setTextColor(GlPrefs.accentColor(this@SettingsActivity))
+            setPadding(dp(4), dp(18), 0, dp(8))
+        })
+    }
+
+    private fun rowLabel(text: String): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 13f
+        setTextColor(GlPrefs.palette(this@SettingsActivity).textSecondary)
+        setPadding(0, dp(10), 0, dp(6))
+    }
+
+    private fun bodyLine(text: String, palette: GlPrefs.Palette): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 13.5f
+        setTextColor(palette.textSecondary)
+        setPadding(0, dp(3), 0, dp(3))
+    }
+
+    private fun optionPills(options: List<Pair<String, Int>>, selected: Int, onPick: (Int) -> Unit): LinearLayout {
+        val palette = GlPrefs.palette(this)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(2), 0, dp(6))
+        }
+        for ((label, value) in options) {
+            val isSel = value == selected
+            row.addView(Button(this).apply {
+                text = label
                 isAllCaps = false
+                textSize = 13.5f
+                setTextColor(if (isSel) Color.WHITE else palette.chipText)
+                background = UiKit.rounded(
+                    this@SettingsActivity,
+                    if (isSel) palette.userBubble else palette.chipBg,
+                    999f,
+                )
+                layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply {
+                    setMargins(dp(3), 0, dp(3), 0)
+                }
+                setOnClickListener { onPick(value) }
+            })
+        }
+        return row
+    }
+
+    private fun swatchRow(palette: GlPrefs.Palette): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(2), 0, dp(6))
+        }
+        val current = GlPrefs.accentName(this)
+        for ((name, color) in GlPrefs.ACCENTS) {
+            val selected = name == current
+            row.addView(TextView(this).apply {
+                text = if (selected) "✓" else ""
+                textSize = 15f
+                gravity = Gravity.CENTER
                 setTextColor(Color.WHITE)
-                background = roundedBg(color)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(color)
+                    if (selected) setStroke(dp(2), palette.textPrimary)
+                }
+                layoutParams = LinearLayout.LayoutParams(dp(42), dp(42)).apply {
+                    setMargins(dp(4), 0, dp(4), 0)
+                }
                 setOnClickListener {
                     GlPrefs.setAccent(this@SettingsActivity, name)
                     build()
                 }
             })
         }
-        label("Chat text size")
-        val size = GlPrefs.textSize(this)
-        root.addView(buttonRow(
-            listOf("Small" to 0, "Default" to 1, "Large" to 2).map { (name, value) ->
-                (if (value == size) "✓ $name" else name) to {
-                    GlPrefs.setTextSize(this, value)
-                    build()
-                }
-            },
-        ))
-
-        // ---------------- Behavior ----------------
-        section("Behavior")
-        root.addView(Button(this).apply {
-            text = "Start sensing when the app opens: ${if (GlPrefs.autoSense(this@SettingsActivity)) "On" else "Off"}"
-            isAllCaps = false
-            setOnClickListener {
-                GlPrefs.setAutoSense(this@SettingsActivity, !GlPrefs.autoSense(this@SettingsActivity))
-                build()
-            }
+        row.addView(TextView(this).apply {
+            text = current
+            textSize = 13.5f
+            setTextColor(palette.textPrimary)
+            setPadding(dp(8), 0, 0, 0)
         })
-        root.addView(Button(this).apply {
-            text = "Send a checkup notification now"
-            isAllCaps = false
-            setOnClickListener {
-                MetricsNotifier.post(this@SettingsActivity, app)
-                Toast.makeText(this@SettingsActivity, "Checkup sent — pull down your notifications.", Toast.LENGTH_SHORT).show()
-            }
-        })
-        note("While sensing runs, a checkup also posts on its own whenever an answer changes — bullet points, at most one a minute.")
-        label("Summon from anywhere")
-        assistantBlock()
-
-        // ---------------- Permissions ----------------
-        section("Permissions")
-        note(permissionsSummary())
-        root.addView(Button(this).apply {
-            text = "Open permissions →"
-            isAllCaps = false
-            setOnClickListener {
-                startActivity(Intent(this@SettingsActivity, PermissionsActivity::class.java))
-            }
-        })
-
-        // ---------------- Data ----------------
-        section("Data")
-        root.addView(Button(this).apply {
-            text = "Copy diagnostics"
-            isAllCaps = false
-            setOnClickListener { copyDiagnostics() }
-        })
-        root.addView(Button(this).apply {
-            text = "Erase everything"
-            isAllCaps = false
-            setTextColor(Color.parseColor("#B3261E"))
-            setOnClickListener { confirmErase() }
-        })
-        note("Erase deletes the encrypted state, the audit anchors, and the clock file from this phone, then restarts the app empty. There is no undo.")
-
-        // ---------------- About ----------------
-        section("About")
-        val version = try {
-            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
-        } catch (e: Exception) {
-            "?"
-        }
-        note("GuardianLink v0.2 (version $version)")
-        note(app.engineStatus)
-        val keyId = synchronized(app.coreLock) { app.core.operatorKeyId }
-        note("Operator key: ${keyId?.take(16) ?: "not bound yet"}…")
+        return row
     }
 
-    // ------------------------------------------------------------------
+    /** A tappable card row: title, subtitle, chevron. */
+    private fun navCard(title: String, subtitle: String, danger: Boolean = false, action: () -> Unit) {
+        val palette = GlPrefs.palette(this)
+        val card = UiKit.cardView(this, palette, 14f)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            addView(TextView(this@SettingsActivity).apply {
+                text = title
+                textSize = 15.5f
+                setTextColor(if (danger) Color.parseColor("#B3261E") else palette.textPrimary)
+            })
+            addView(TextView(this@SettingsActivity).apply {
+                text = subtitle
+                textSize = 12.5f
+                setTextColor(palette.textSecondary)
+                setPadding(0, dp(2), 0, 0)
+            })
+        })
+        row.addView(TextView(this).apply {
+            text = "›"
+            textSize = 22f
+            setTextColor(palette.textSecondary)
+        })
+        card.addView(row)
+        UiKit.addRipple(card, this)
+        card.setOnClickListener { action() }
+        root.addView(card)
+    }
 
     /**
-     * The assistant role: the sanctioned way an app becomes the
-     * thing the system summon opens from anywhere. The literal words
-     * "OK Google" stay Google's — Android offers no app a claim on
-     * them, and this screen says so instead of pretending. What the
-     * role gives is the gesture: long-press home or power (or the
-     * corner swipe) opens GuardianLink already listening, over any
-     * app, and spoken words run through the same pipeline as typed.
+     * The assistant role, as a card: the sanctioned way an app
+     * becomes the thing the system summon opens from anywhere. The
+     * literal words "OK Google" stay Google's — Android offers no
+     * app a claim on them, and this card says so instead of
+     * pretending. What the role gives is the gesture.
      */
-    private fun assistantBlock() {
+    private fun assistantCard(palette: GlPrefs.Palette) {
+        val card = UiKit.cardView(this, palette, 14f)
+        card.addView(TextView(this).apply {
+            text = "Summon from anywhere"
+            textSize = 15.5f
+            setTextColor(palette.textPrimary)
+        })
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val roleManager = getSystemService(RoleManager::class.java)
             when {
                 roleManager == null || !roleManager.isRoleAvailable(RoleManager.ROLE_ASSISTANT) ->
-                    note("This phone doesn't expose the assistant role to apps.")
+                    card.addView(bodyLine("This phone doesn't expose the assistant role to apps.", palette))
                 roleManager.isRoleHeld(RoleManager.ROLE_ASSISTANT) ->
-                    note("GuardianLink is your default assistant ✓ — summon it with your phone's assistant gesture from any app and it opens already listening.")
+                    card.addView(bodyLine("GuardianLink is your default assistant ✓ — summon it with your phone's assistant gesture from any app and it opens already listening.", palette))
                 else -> {
-                    root.addView(Button(this).apply {
+                    card.addView(bodyLine("As your default assistant, GuardianLink takes the system summon (long-press home or power, or the corner swipe) from any app — no trip back to the home screen.", palette))
+                    card.addView(Button(this).apply {
                         text = "Make GuardianLink my assistant"
                         isAllCaps = false
+                        setTextColor(Color.WHITE)
+                        background = UiKit.rounded(this@SettingsActivity, palette.userBubble, 999f)
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            dp(44),
+                        ).apply { setMargins(0, dp(10), 0, 0) }
                         setOnClickListener {
                             assistantRoleLauncher.launch(roleManager.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT))
                         }
                     })
-                    note("As your default assistant, GuardianLink takes the system summon (long-press home or power, or the corner swipe) from any app — no trip back to the home screen.")
                 }
             }
         } else {
-            root.addView(Button(this).apply {
+            card.addView(Button(this).apply {
                 text = "Open assistant settings"
                 isAllCaps = false
                 setOnClickListener {
@@ -210,8 +356,11 @@ class SettingsActivity : AppCompatActivity() {
                 }
             })
         }
-        note("One honest limit: the words \"OK Google\" belong to Google's assistant and no other app can claim them. The summon gesture is the route Android actually gives — the words you'd speak after it are yours.")
+        card.addView(bodyLine("One honest limit: the words \"OK Google\" belong to Google's assistant and no other app can claim them. The summon gesture is the route Android actually gives — the words you'd speak after it are yours.", palette))
+        root.addView(card)
     }
+
+    // ------------------------------------------------------------------
 
     private fun permissionsSummary(): String {
         var total = 0
@@ -229,7 +378,7 @@ class SettingsActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             count(ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED)
         }
-        return "$on of $total core grants are on. Each one has its own pathway — what it's for, its state, and the shortest route to change it."
+        return "$on of $total core grants are on. Each has its own pathway — what it's for, its state, and the shortest route to change it."
     }
 
     private fun copyDiagnostics() {
@@ -272,52 +421,4 @@ class SettingsActivity : AppCompatActivity() {
         startActivity(intent)
         exitProcess(0)
     }
-
-    // ------------------------------------------------------------------
-
-    private fun section(title: String) {
-        root.addView(TextView(this).apply {
-            text = title.uppercase()
-            textSize = 13f
-            setTextColor(GlPrefs.accentColor(this@SettingsActivity))
-            setPadding(0, 36, 0, 6)
-        })
-    }
-
-    private fun label(text: String) {
-        root.addView(TextView(this).apply {
-            this.text = text
-            textSize = 14f
-            setTextColor(GlPrefs.palette(this@SettingsActivity).textSecondary)
-            setPadding(0, 12, 0, 4)
-        })
-    }
-
-    private fun note(text: String) {
-        root.addView(TextView(this).apply {
-            this.text = text
-            textSize = 13f
-            setTextColor(GlPrefs.palette(this@SettingsActivity).textSecondary)
-            setPadding(0, 6, 0, 6)
-        })
-    }
-
-    private fun buttonRow(options: List<Pair<String, () -> Unit>>): LinearLayout {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        for ((labelText, action) in options) {
-            row.addView(Button(this).apply {
-                text = labelText
-                isAllCaps = false
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener { action() }
-            })
-        }
-        return row
-    }
-
-    private fun roundedBg(color: Int): android.graphics.drawable.GradientDrawable =
-        android.graphics.drawable.GradientDrawable().apply {
-            setColor(color)
-            cornerRadius = 24f * resources.displayMetrics.density
-        }
 }
