@@ -79,7 +79,9 @@ dependencies {
     // Health collector: Health Connect is Android's health bus —
     // watches and health apps publish there, and this client reads
     // what the sovereign granted (HealthConnectCollector).
-    implementation("androidx.health.connect:connect-client:1.1.0-alpha12")
+    // alpha07: the newest line that compiles against SDK 34 (the
+    // module's pinned SDK); alpha08+ demand compileSdk 35.
+    implementation("androidx.health.connect:connect-client:1.1.0-alpha07")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
     // Same JUnit 5 line the engine's own tests use (root build.gradle.kts).
