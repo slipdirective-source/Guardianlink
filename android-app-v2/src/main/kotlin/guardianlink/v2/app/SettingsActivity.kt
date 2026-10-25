@@ -1,6 +1,7 @@
 package guardianlink.v2.app
 
 import android.Manifest
+import android.app.role.RoleManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -15,6 +16,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.NotificationManagerCompat
@@ -33,6 +35,9 @@ class SettingsActivity : AppCompatActivity() {
 
     private lateinit var root: LinearLayout
     private val app: GuardianLinkV2App get() = application as GuardianLinkV2App
+
+    private val assistantRoleLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { build() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,6 +129,8 @@ class SettingsActivity : AppCompatActivity() {
             }
         })
         note("While sensing runs, a checkup also posts on its own whenever an answer changes — bullet points, at most one a minute.")
+        label("Summon from anywhere")
+        assistantBlock()
 
         // ---------------- Permissions ----------------
         section("Permissions")
@@ -165,6 +172,46 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     // ------------------------------------------------------------------
+
+    /**
+     * The assistant role: the sanctioned way an app becomes the
+     * thing the system summon opens from anywhere. The literal words
+     * "OK Google" stay Google's — Android offers no app a claim on
+     * them, and this screen says so instead of pretending. What the
+     * role gives is the gesture: long-press home or power (or the
+     * corner swipe) opens GuardianLink already listening, over any
+     * app, and spoken words run through the same pipeline as typed.
+     */
+    private fun assistantBlock() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = getSystemService(RoleManager::class.java)
+            when {
+                roleManager == null || !roleManager.isRoleAvailable(RoleManager.ROLE_ASSISTANT) ->
+                    note("This phone doesn't expose the assistant role to apps.")
+                roleManager.isRoleHeld(RoleManager.ROLE_ASSISTANT) ->
+                    note("GuardianLink is your default assistant ✓ — summon it with your phone's assistant gesture from any app and it opens already listening.")
+                else -> {
+                    root.addView(Button(this).apply {
+                        text = "Make GuardianLink my assistant"
+                        isAllCaps = false
+                        setOnClickListener {
+                            assistantRoleLauncher.launch(roleManager.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT))
+                        }
+                    })
+                    note("As your default assistant, GuardianLink takes the system summon (long-press home or power, or the corner swipe) from any app — no trip back to the home screen.")
+                }
+            }
+        } else {
+            root.addView(Button(this).apply {
+                text = "Open assistant settings"
+                isAllCaps = false
+                setOnClickListener {
+                    startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS))
+                }
+            })
+        }
+        note("One honest limit: the words \"OK Google\" belong to Google's assistant and no other app can claim them. The summon gesture is the route Android actually gives — the words you'd speak after it are yours.")
+    }
 
     private fun permissionsSummary(): String {
         var total = 0
