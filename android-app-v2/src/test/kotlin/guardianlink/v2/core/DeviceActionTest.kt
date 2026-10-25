@@ -153,6 +153,17 @@ class DeviceActionTest {
     }
 
     @Test
+    fun `conjunction forms — text Shan and tell her`() {
+        val h = harnessWith { DeviceOutcome("Text sent.") }
+        val r = h.say("text Shan in my contacts and tell her I love her.")
+        assertTrue(r.reply.startsWith("Send this text?"), "review prompt: ${r.reply}")
+        assertTrue(r.reply.contains("To: Shan"), "qualifier stripped, short name kept: ${r.reply}")
+        assertTrue(r.reply.contains("\"I love her.\""), "body intact: ${r.reply}")
+        val r2 = h.say("send Shannon a text and tell her the cabinets are done")
+        assertTrue(r2.reply.startsWith("Send this text?"), "send-side conjunction: ${r2.reply}")
+    }
+
+    @Test
     fun `the third screenshot's sentences all land`() {
         val h = harnessWith { DeviceOutcome("Text sent to Shannon.") }
         // Leading discourse word + contacts qualifier.
