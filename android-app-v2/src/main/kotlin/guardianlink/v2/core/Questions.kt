@@ -205,14 +205,48 @@ class QuestionEngine(
         return Pair(states, retracted)
     }
 
+    /**
+     * Surface prose for a claim. The ledger keeps the claim verbatim;
+     * what the sovereign reads is a sentence, not a terminal line: a
+     * trailing parenthetical becomes an aside ("Battery at 67% (not
+     * charging)" → "Battery at 67% — not charging"), and no topic
+     * names, source tags, or confidence values ever reach the text.
+     * The machinery stays underground — in the ledger, the vault, and
+     * the audit chain — where it belongs.
+     */
+    private fun proseClaim(claim: String): String {
+        val m = Regex("^(.*?)\\s*\\(([^()]*)\\)\\s*$").find(claim)
+        val body = if (m != null) "${m.groupValues[1]} — ${m.groupValues[2]}" else claim
+        return if (body.endsWith(".") || body.endsWith("!") || body.endsWith("?")) body else "$body."
+    }
+
     private fun renderStateLine(s: TopicState): String {
         val e = s.latest!!
-        val srcTag = if (e.agentDerived) "agent-derived via ${e.source}" else e.source
-        var line = "${s.topic}: ${e.claim} [$srcTag, conf ${String.format(Locale.US, "%.2f", e.confidence)}]"
+        var line = proseClaim(e.claim)
+        if (e.agentDerived) {
+            // Provenance is never laundered: a claim an agent derived
+            // is labeled as one, in the sentence itself — the surface
+            // rule from the product model, kept in prose form.
+            line += " That's agent-derived — an inference, not an observation."
+        }
         if (s.conflict != null) {
-            line += " — CONFLICT with: ${s.conflict.claims.filter { c -> c != e.claim }.joinToString(" | ")}"
+            val others = s.conflict.claims.filter { c -> c != e.claim }
+            if (others.isNotEmpty()) {
+                line += " In CONFLICT with: ${others.joinToString(" / ") { proseClaim(it).removeSuffix(".") }}."
+            }
         }
         return line
+    }
+
+    /** A collector's status, as a sentence a person would say. */
+    private fun collectorLine(s: TopicState): String {
+        val name = s.topic.removePrefix("collector.").replaceFirstChar { it.uppercase() }
+        val claim = s.latest!!.claim
+        return if (claim == "collecting") {
+            "$name is being collected."
+        } else {
+            "$name collector — ${proseClaim(claim)}"
+        }
     }
 
     private fun evaluate(q: StandingQuestion): EvalResult {
@@ -248,9 +282,9 @@ class QuestionEngine(
                 )
             }
             val recent = all.sortedBy { it.seq }.takeLast(6)
-            val lines = recent.map { e -> "#${e.seq} [${e.kind.wire}] ${e.claim} (${e.source})" }
+            val lines = recent.map { e -> proseClaim(e.claim) }
             return EvalResult(
-                text = "Path so far:\n" + lines.joinToString("\n"),
+                text = "Here's how you got here:\n" + lines.joinToString("\n"),
                 delta = Delta.DISTINGUISHED,
                 basis = Basis.MIXED,
                 evidenceIds = recent.map { it.id },
@@ -276,7 +310,7 @@ class QuestionEngine(
 
         if (states.isEmpty()) {
             return EvalResult(
-                text = "Unknown: no live evidence bears on \"${q.text}\" yet.",
+                text = "I don't know yet — nothing on record bears on that.",
                 delta = Delta.UNKNOWN,
                 basis = Basis.NONE,
                 evidenceIds = emptyList(),
@@ -285,24 +319,46 @@ class QuestionEngine(
             )
         }
 
+        // Compose the answer as prose. The composition differs by
+        // question because the questions mean different things: the
+        // geographic answer leads with the place and keeps metrics
+        // (location.fix readouts) and other collectors' statuses out
+        // of it entirely — those are the vault's material, not an
+        // answer's. Everywhere, the lines are sentences; the topic
+        // names, sources, and confidences that produced them stay in
+        // the ledger where they can be audited.
         val lines = mutableListOf<String>()
-        for (s in states) {
-            if (s.topic.startsWith("collector.")) {
-                val name = s.topic.removePrefix("collector.")
-                lines.add("collector $name: ${s.latest!!.claim}")
-            } else {
+        if (q.cluster == ClusterId.POSITION) {
+            val location = states.firstOrNull { it.topic == "location" }
+            if (location?.latest != null) lines.add(renderStateLine(location))
+            val locCollector = states.firstOrNull { it.topic == "collector.location" }
+            if (locCollector?.latest != null && (location?.latest == null || locCollector.latest!!.claim != "collecting")) {
+                lines.add(collectorLine(locCollector))
+            }
+            for (s in states) {
+                if (s.topic == "location" || s.topic == "location.fix" || s.topic.startsWith("collector.")) continue
                 lines.add(renderStateLine(s))
+            }
+            if (lines.isEmpty()) lines.add("I don't know yet — no position evidence has come in.")
+        } else {
+            for (s in states) {
+                if (s.topic == "location.fix") continue
+                if (s.topic.startsWith("collector.")) {
+                    lines.add(collectorLine(s))
+                } else {
+                    lines.add(renderStateLine(s))
+                }
             }
         }
 
         if (q.cluster == ClusterId.TRAJECTORY) {
             val loc = states.firstOrNull { it.topic == "location" }
             if (loc != null && loc.live.size > 1) {
-                lines.add("movement: ${loc.live[0].claim} -> ${loc.latest!!.claim}")
+                lines.add("Movement: ${proseClaim(loc.live[0].claim).removeSuffix(".")} → ${proseClaim(loc.latest!!.claim)}")
             }
             for (s in states) {
                 if (s.latest != null && DRIFT_TERMS.any { t -> s.latest.claim.lowercase().contains(t) }) {
-                    lines.add("heading: DRIFT SIGNAL on ${s.topic}")
+                    lines.add("Drift signal: the latest ${s.topic} reading carries drift terms.")
                 }
             }
         }
@@ -312,8 +368,8 @@ class QuestionEngine(
                 .flatMap { e -> e.relations.filter { r -> r.type == RelationType.EXECUTES }.map { r -> r.targetId } }
                 .toSet()
             val pending = proposals.filter { p -> !executed.contains(p.id) }
-            for (p in pending) lines.add("pending action awaiting authority: ${p.claim}")
-            if (conflicts.isNotEmpty()) lines.add("some options are blocked by unresolved conflicts (see conflicts)")
+            for (p in pending) lines.add("Waiting on your say-so: ${proseClaim(p.claim)}")
+            if (conflicts.isNotEmpty()) lines.add("Some options are blocked by a conflict that hasn't been resolved.")
         }
         if (q.cluster == ClusterId.CUSTOM) {
             val drift = states.any { s -> s.latest != null && DRIFT_TERMS.any { t -> s.latest.claim.lowercase().contains(t) } }
