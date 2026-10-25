@@ -118,7 +118,8 @@ val LOCAL_ADAPTERS: List<String> =
  * and the record; the handler owns only the effect. No handler
  * injected → no adapter → cannot execute, stated plainly.
  */
-val DEVICE_ACTIONS: List<String> = listOf("phone_call", "send_text", "send_email")
+val DEVICE_ACTIONS: List<String> =
+    listOf("phone_call", "send_text", "send_email", "device_open_app", "device_tap", "device_type", "device_press", "read_screen")
 
 /** What a device handler reports back: the observed outcome, in words. */
 data class DeviceOutcome(val claim: String, val payload: Any? = null)
@@ -469,7 +470,8 @@ class ActionLayer(private val deps: ActionDeps) {
                 mapOf("collector" to p.target, "status" to "active")
             }
             "export_ledger" -> deps.exportLedger()
-            "phone_call", "send_text", "send_email" -> {
+            "phone_call", "send_text", "send_email",
+            "device_open_app", "device_tap", "device_type", "device_press", "read_screen" -> {
                 val handler = deps.deviceAction
                     ?: throw IllegalStateException("no device-action handler is attached in this build")
                 handler(p)
