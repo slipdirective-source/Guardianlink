@@ -572,11 +572,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    companion object {
-        /** Set by the assistant-role session when the system summon opens us. */
-        const val EXTRA_VOICE_SUMMON = "guardianlink.v2.app.extra.VOICE_SUMMON"
-    }
-
     override fun onDestroy() {
         recognizer?.destroy()
         recognizer = null
@@ -593,5 +588,8 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val REFRESH_MS = 1000L
         private const val REQ_SENSING_PERMISSIONS = 2002
+
+        /** Set by the assistant-role session when the system summon opens us. */
+        const val EXTRA_VOICE_SUMMON = "guardianlink.v2.app.extra.VOICE_SUMMON"
     }
 }
