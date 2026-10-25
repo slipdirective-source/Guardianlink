@@ -14,6 +14,8 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.content.ContextCompat
 import guardianlink.v2.core.AdmitInput
+import guardianlink.v2.core.TripSummary
+import guardianlink.v2.core.TripTracker
 import guardianlink.v2.core.CollectorStatus
 import guardianlink.v2.core.EventKind
 
@@ -54,6 +56,15 @@ class SensingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_REFRESH) {
+            // Wake settings changed while sensing runs: reconcile
+            // the ear with the new truth instead of waiting for a
+            // sensing restart that may never come (the silent-ear
+            // failure of 2026-10-25).
+            WakeWordEngine.stop()
+            maybeStartWakeWord()
+            return START_STICKY
+        }
         if (intent?.action == ACTION_STOP) {
             stopSensing()
             return START_NOT_STICKY
@@ -68,10 +79,17 @@ class SensingService : Service() {
         deviceStateCollector = deviceState
         deviceState.start()
 
+        val tracker = TripTracker { summary -> admitTripSummary(app, summary) }
+        restoreTripTracker(tracker)
+        tripTracker = tracker
         val location = LocationCollector(
             context = this,
             sink = { topic, claim, confidence -> admitObservation(app, "location", topic, claim, confidence) },
             onUnavailable = { reason -> markUnavailable(app, "location", reason) },
+            onFix = { lat, lon, speed, epochMs, acc ->
+                tracker.onFix(lat, lon, speed, epochMs, acc)
+                persistTripTracker(tracker)
+            },
         )
         locationCollector = location
         location.start()
@@ -120,6 +138,7 @@ class SensingService : Service() {
         }, 20, 15 * 60, java.util.concurrent.TimeUnit.SECONDS)
 
         running = true
+        isRunning = true
         setWasRunning(this, true)
         Log.i(TAG, "sensing up (device state, location, motion — each as permitted)")
         maybeStartWakeWord()
@@ -152,6 +171,7 @@ class SensingService : Service() {
     }
 
     private fun stopSensing() {
+        isRunning = false
         WakeWordEngine.stop()
         deviceStateCollector?.stop()
         deviceStateCollector = null
@@ -208,6 +228,42 @@ class SensingService : Service() {
         lastCheckupAtMs = now
         MetricsNotifier.post(this, app)
         app.persistCore()
+    }
+
+    private var tripTracker: TripTracker? = null
+
+    /** Persist the in-progress trip so a service restart mid-drive doesn't lose it. */
+    private fun persistTripTracker(tracker: TripTracker) {
+        val prefs = getSharedPreferences(TRIP_PREFS, Context.MODE_PRIVATE).edit()
+        for ((k, v) in tracker.snapshot()) prefs.putString(k, v)
+        prefs.apply()
+    }
+
+    private fun restoreTripTracker(tracker: TripTracker) {
+        val prefs = getSharedPreferences(TRIP_PREFS, Context.MODE_PRIVATE)
+        val map = prefs.all.filterValues { it is String }.mapValues { it.value as String }
+        if (map.isNotEmpty()) tracker.restore(map)
+    }
+
+    /** A closed trip enters the record as derived evidence — askable, auditable, never a billboard. */
+    private fun admitTripSummary(app: GuardianLinkV2App, summary: TripSummary) {
+        try {
+            synchronized(app.coreLock) {
+                app.core.collectors.assertCollecting("location")
+                app.core.admit(
+                    AdmitInput(
+                        kind = EventKind.DERIVED_INFERENCE,
+                        topic = "trip.summary",
+                        claim = summary.claim(),
+                        source = "trip_tracker",
+                        confidence = 0.9,
+                    ),
+                )
+            }
+            maybePostCheckup(app)
+        } catch (refused: IllegalStateException) {
+            Log.w(TAG, "trip summary refused at harness boundary: ${refused.message}")
+        }
     }
 
     /**
@@ -293,11 +349,17 @@ class SensingService : Service() {
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     companion object {
+        private const val TRIP_PREFS = "gl-trip-tracker"
         private const val TAG = "GlV2Sensing"
         private const val CHANNEL_ID = "gl-v2-sensing"
         private const val NOTIF_ID = 2
         private const val CHECKUP_MIN_INTERVAL_MS = 60_000L
         const val ACTION_STOP = "guardianlink.v2.app.action.STOP_SENSING"
+        const val ACTION_REFRESH = "guardianlink.v2.app.action.REFRESH_SENSING"
+
+        /** Live truth: is sensing running right now (Settings reads this, never guesses). */
+        @Volatile
+        var isRunning: Boolean = false
 
         private const val PREFS = "gl-v2-sensing"
         private const val KEY_WAS_RUNNING = "was_running"
@@ -318,6 +380,9 @@ class SensingService : Service() {
 
         fun stopIntent(context: Context): Intent =
             Intent(context, SensingService::class.java).setAction(ACTION_STOP)
+
+        fun refreshIntent(context: Context): Intent =
+            Intent(context, SensingService::class.java).setAction(ACTION_REFRESH)
     }
 }
 
