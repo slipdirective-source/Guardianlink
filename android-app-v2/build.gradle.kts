@@ -26,6 +26,14 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.2.0"
+        // arm64 only: Vosk (and the ZK bridge) ship per-ABI native
+        // libs; the other ABIs tripled the APK for hardware this
+        // build never targets, and the 45 MB result broke the
+        // branch-blob delivery route (>100 MB is the API ceiling,
+        // but the practical one is far lower).
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
