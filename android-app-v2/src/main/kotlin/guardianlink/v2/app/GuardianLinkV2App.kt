@@ -154,6 +154,10 @@ class GuardianLinkV2App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Night mode is an appearance preference; it must be applied
+        // before any activity renders, or the first frame lies about
+        // the setting.
+        GlPrefs.applyNightMode(this)
         core = loadOrInitCore()
         // The Android layer's own collector: device state (screen,
         // battery, network) — see DeviceStateCollector. Registered in
