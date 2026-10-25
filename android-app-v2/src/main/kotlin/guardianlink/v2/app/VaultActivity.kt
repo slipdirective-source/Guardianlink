@@ -1,5 +1,6 @@
 package guardianlink.v2.app
 
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -61,7 +62,8 @@ class VaultActivity : AppCompatActivity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(palette.headerBg)
-            setPadding(36, 32, 36, 24)
+            elevation = UiKit.dp(this@VaultActivity, 4).toFloat()
+            setPadding(UiKit.dp(this@VaultActivity, 16), UiKit.dp(this@VaultActivity, 14), UiKit.dp(this@VaultActivity, 16), UiKit.dp(this@VaultActivity, 14))
             addView(TextView(this@VaultActivity).apply {
                 text = "Data vault"
                 textSize = 20f
@@ -75,14 +77,22 @@ class VaultActivity : AppCompatActivity() {
             })
         }
 
+        // Segmented control: a pill track with the active tab filled.
         tabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(16, 12, 16, 4)
+            background = UiKit.rounded(this@VaultActivity, palette.chipBg, 999f)
+            setPadding(UiKit.dp(this@VaultActivity, 4), UiKit.dp(this@VaultActivity, 4), UiKit.dp(this@VaultActivity, 4), UiKit.dp(this@VaultActivity, 4))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                setMargins(UiKit.dp(this@VaultActivity, 14), UiKit.dp(this@VaultActivity, 12), UiKit.dp(this@VaultActivity, 14), UiKit.dp(this@VaultActivity, 2))
+            }
         }
 
         list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 16, 32, 32)
+            setPadding(UiKit.dp(this@VaultActivity, 14), UiKit.dp(this@VaultActivity, 10), UiKit.dp(this@VaultActivity, 14), UiKit.dp(this@VaultActivity, 24))
         }
         val scroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -93,12 +103,23 @@ class VaultActivity : AppCompatActivity() {
             addView(list)
         }
 
+        val nav = UiKit.bottomNav(this, palette, "vault") { target ->
+            when (target) {
+                "chat" -> finish()
+                "settings" -> {
+                    startActivity(Intent(this, SettingsActivity::class.java))
+                    finish()
+                }
+            }
+        }
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(palette.pageBg)
             addView(header)
             addView(tabRow)
             addView(scroll)
+            addView(nav)
         }
         setContentView(root)
         renderTabs()
@@ -122,17 +143,17 @@ class VaultActivity : AppCompatActivity() {
         tabRow.removeAllViews()
         for (t in Tab.values()) {
             val selected = t == tab
-            tabRow.addView(Button(this).apply {
+            tabRow.addView(TextView(this).apply {
                 text = t.label
-                isAllCaps = false
                 textSize = 13f
+                gravity = Gravity.CENTER
                 setTextColor(if (selected) Color.WHITE else palette.chipText)
-                background = roundedBg(if (selected) palette.userBubble else palette.chipBg)
+                if (selected) background = UiKit.rounded(this@VaultActivity, palette.userBubble, 999f)
                 layoutParams = LinearLayout.LayoutParams(
                     0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    UiKit.dp(this@VaultActivity, 36),
                     1f,
-                ).apply { setMargins(4, 2, 4, 2) }
+                )
                 setOnClickListener {
                     tab = t
                     renderTabs()
@@ -165,39 +186,52 @@ class VaultActivity : AppCompatActivity() {
             Triple(app.core.snapshot(), app.core.collectors.all(), app.core.verifyIntegrity())
         }
         for (q in answers) {
-            list.addView(TextView(this).apply {
-                text = q.text
-                textSize = 13f
+            val card = UiKit.cardView(this, palette, 14f)
+            card.addView(TextView(this).apply {
+                text = q.text.uppercase()
+                textSize = 11.5f
                 setTextColor(palette.textSecondary)
-                setPadding(0, 18, 0, 0)
             })
-            list.addView(TextView(this).apply {
+            card.addView(TextView(this).apply {
                 text = q.current.text
                 textSize = 15f
                 setTextColor(palette.textPrimary)
+                setPadding(0, UiKit.dp(this@VaultActivity, 4), 0, 0)
             })
-            list.addView(TextView(this).apply {
-                text = "${plainDelta(q.current.delta)} · version ${q.current.version} · updated ${shortTime(q.current.evaluatedAt)}"
-                textSize = 12f
-                setTextColor(palette.textSecondary)
-            })
+            val meta = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, UiKit.dp(this@VaultActivity, 8), 0, 0)
+                addView(UiKit.deltaPill(this@VaultActivity, palette, q.current.delta))
+                addView(TextView(this@VaultActivity).apply {
+                    text = "  v${q.current.version} · updated ${shortTime(q.current.evaluatedAt)}"
+                    textSize = 12f
+                    setTextColor(palette.textSecondary)
+                })
+            }
+            card.addView(meta)
+            list.addView(card)
         }
 
         sectionTitle("Collectors", palette)
+        val collectorsCard = UiKit.cardView(this, palette, 14f)
         if (collectors.isEmpty()) {
-            emptyLine("No collectors registered.", palette)
+            collectorsCard.addView(bodyText("No collectors registered.", palette))
         }
         for (c in collectors) {
             val reason = c.statusReason?.let { " — $it" } ?: ""
-            line("• ${c.name}: ${c.status.wire}$reason", palette)
+            collectorsCard.addView(bodyText("• ${c.name}: ${c.status.wire}$reason", palette))
         }
+        list.addView(collectorsCard)
 
         sectionTitle("Record integrity", palette)
+        val integrityCard = UiKit.cardView(this, palette, 14f)
         val ledgerOk = integrity["ledgerChain"] as? Boolean
         val auditOk = integrity["auditChain"] as? Boolean
-        line("• Ledger chain: ${verdict(ledgerOk)}", palette)
-        line("• Audit chain: ${verdict(auditOk)}", palette)
-        line("• Events on record: ${integrity["events"]} · audit entries: ${integrity["auditEntries"]}", palette)
+        integrityCard.addView(bodyText("• Ledger chain: ${verdict(ledgerOk)}", palette))
+        integrityCard.addView(bodyText("• Audit chain: ${verdict(auditOk)}", palette))
+        integrityCard.addView(bodyText("• Events on record: ${integrity["events"]} · audit entries: ${integrity["auditEntries"]}", palette))
+        list.addView(integrityCard)
     }
 
     private fun renderEvents(palette: GlPrefs.Palette, emptyText: String, keep: (EvidenceEvent) -> Boolean) {
@@ -210,18 +244,32 @@ class VaultActivity : AppCompatActivity() {
             return
         }
         for (e in events) {
-            list.addView(TextView(this).apply {
+            val card = UiKit.cardView(this, palette, 12f)
+            card.setPadding(
+                UiKit.dp(this, 14), UiKit.dp(this, 10),
+                UiKit.dp(this, 14), UiKit.dp(this, 10),
+            )
+            (card.layoutParams as LinearLayout.LayoutParams).setMargins(0, 0, 0, UiKit.dp(this, 8))
+            card.addView(TextView(this).apply {
                 text = e.claim
                 textSize = 14f
                 setTextColor(palette.textPrimary)
-                setPadding(0, 14, 0, 0)
             })
-            list.addView(TextView(this).apply {
+            card.addView(TextView(this).apply {
                 text = "${shortTime(e.assertedAt)} · ${e.topic} · ${e.source} · confidence ${(e.confidence * 100).toInt()}%"
-                textSize = 12f
+                textSize = 11.5f
                 setTextColor(palette.textSecondary)
+                setPadding(0, UiKit.dp(this@VaultActivity, 3), 0, 0)
             })
+            list.addView(card)
         }
+    }
+
+    private fun bodyText(text: String, palette: GlPrefs.Palette): TextView = TextView(this).apply {
+        this.text = text
+        textSize = 14f
+        setTextColor(palette.textPrimary)
+        setPadding(0, UiKit.dp(this@VaultActivity, 3), 0, UiKit.dp(this@VaultActivity, 3))
     }
 
     // ------------------------------------------------------------------
