@@ -34,12 +34,18 @@ object MetricsNotifier {
         )
     }
 
-    /** Bullet lines for the current standing answers. Pure rendering of the snapshot. */
+    /**
+     * Bullet lines for the current standing answers. Pure rendering
+     * of the snapshot — with the sovereign's relevance rule applied:
+     * everything is tracked, but only what bears on the present is
+     * surfaced. An answer that doesn't apply right now stays in the
+     * record (and in the vault) without taking notification space.
+     */
     fun lines(app: GuardianLinkV2App): List<String> {
         val answers = synchronized(app.coreLock) { app.core.snapshot() }
-        return answers.map { q ->
-            "• ${q.text} — ${q.current.text} (${plainDelta(q.current.delta)})"
-        }
+        return answers
+            .filter { q -> q.current.delta != Delta.INAPPLICABLE }
+            .map { q -> "• ${q.text} — ${q.current.text} (${plainDelta(q.current.delta)})" }
     }
 
     fun post(context: Context, app: GuardianLinkV2App) {
