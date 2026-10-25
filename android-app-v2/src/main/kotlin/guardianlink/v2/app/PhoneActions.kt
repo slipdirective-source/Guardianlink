@@ -2,10 +2,8 @@ package guardianlink.v2.app
 
 import android.Manifest
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -92,49 +90,55 @@ object PhoneActions {
             SmsManager.getDefault()
         } ?: throw IllegalStateException("No SMS manager is available on this phone.")
 
-        val action = "guardianlink.v2.app.SMS_SENT"
+        // The confirmation door is a manifest receiver reached by
+        // an explicit-component PendingIntent (see SmsSentReceiver
+        // for why the runtime receiver never heard the carrier).
+        val token = java.util.UUID.randomUUID().toString()
         val latch = CountDownLatch(1)
         val results = intArrayOf(Int.MIN_VALUE)
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(c: Context?, intent: Intent?) {
-                results[0] = resultCode
-                latch.countDown()
-            }
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(receiver, IntentFilter(action), Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            context.registerReceiver(receiver, IntentFilter(action))
-        }
+        pendingSms[token] = latch to results
         try {
             val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            val sentIntent = PendingIntent.getBroadcast(context, who.hashCode(), Intent(action), piFlags)
+            fun sentIntent(requestCode: Int): PendingIntent {
+                val intent = Intent(context, SmsSentReceiver::class.java)
+                    .putExtra(SmsSentReceiver.EXTRA_TOKEN, token)
+                return PendingIntent.getBroadcast(context, requestCode, intent, piFlags)
+            }
             val parts = sms.divideMessage(body)
             if (parts.size <= 1) {
-                sms.sendTextMessage(number, null, body, sentIntent, null)
+                sms.sendTextMessage(number, null, body, sentIntent(token.hashCode()), null)
             } else {
                 // One sent-intent per part (the platform signature
                 // takes no nulls); the latch resolves on the first
                 // carrier answer.
                 val intents = ArrayList<PendingIntent>()
                 for (i in parts.indices) {
-                    intents.add(
-                        PendingIntent.getBroadcast(context, who.hashCode() + i, Intent(action), piFlags),
-                    )
+                    intents.add(sentIntent(token.hashCode() + i))
                 }
                 sms.sendMultipartTextMessage(number, null, parts, intents, null)
             }
-            if (!latch.await(15, TimeUnit.SECONDS)) {
-                throw IllegalStateException("The carrier gave no delivery confirmation within 15 seconds — the send is unconfirmed.")
+            if (!latch.await(20, TimeUnit.SECONDS)) {
+                throw IllegalStateException(
+                    "The text was handed to the carrier, but no send confirmation came back within 20 seconds — the send is unconfirmed, not known-failed.",
+                )
             }
             if (results[0] != android.app.Activity.RESULT_OK) {
                 throw IllegalStateException("The carrier refused the text (result ${results[0]}).")
             }
         } finally {
-            try { context.unregisterReceiver(receiver) } catch (e: Exception) { /* already gone */ }
+            pendingSms.remove(token)
         }
         return DeviceOutcome("Text sent to $who: \"$body\"", mapOf("number" to number))
+    }
+
+    /** Waiting SMS confirmations, token → (latch, result slot). Filled by [SmsSentReceiver]. */
+    private val pendingSms = java.util.concurrent.ConcurrentHashMap<String, Pair<CountDownLatch, IntArray>>()
+
+    /** The manifest receiver's postbox: record the carrier's answer and release the waiter. */
+    fun onSmsSentResult(token: String, resultCode: Int) {
+        val pending = pendingSms[token] ?: return
+        pending.second[0] = resultCode
+        pending.first.countDown()
     }
 
     private fun email(context: Context, to: String, subject: String, body: String): DeviceOutcome {
