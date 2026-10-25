@@ -102,7 +102,7 @@ class DeviceActionTest {
         val yes = h.say("yes")
         assertEquals(true, yes.execution?.executed, "executes on assent: ${yes.reply}")
         assertEquals("Shannon", seen?.parameters?.get("to"))
-        assertEquals("I love her", seen?.parameters?.get("body"))
+        assertEquals("I love you", seen?.parameters?.get("body"))
     }
 
     @Test
@@ -125,7 +125,7 @@ class DeviceActionTest {
         val r = h.say("send Shannon a text telling her I love her")
         assertTrue(r.reply.startsWith("Send this text?"), "the prompt IS the review: ${r.reply}")
         assertTrue(r.reply.contains("To: Shannon"), "recipient shown: ${r.reply}")
-        assertTrue(r.reply.contains("\"I love her\""), "exact body shown: ${r.reply}")
+        assertTrue(r.reply.contains("\"I love you\""), "exact body shown: ${r.reply}")
         assertTrue(!r.reply.contains("policy") && !r.reply.contains("rail"), "no boilerplate in the prompt: ${r.reply}")
         val no = h.say("no")
         assertTrue(no.reply.contains("Left unexecuted"), "no drops it cleanly: ${no.reply}")
@@ -158,7 +158,7 @@ class DeviceActionTest {
         val r = h.say("text Shan in my contacts and tell her I love her.")
         assertTrue(r.reply.startsWith("Send this text?"), "review prompt: ${r.reply}")
         assertTrue(r.reply.contains("To: Shan"), "qualifier stripped, short name kept: ${r.reply}")
-        assertTrue(r.reply.contains("\"I love her.\""), "body intact: ${r.reply}")
+        assertTrue(r.reply.contains("\"I love you.\""), "body intact: ${r.reply}")
         val r2 = h.say("send Shannon a text and tell her the cabinets are done")
         assertTrue(r2.reply.startsWith("Send this text?"), "send-side conjunction: ${r2.reply}")
     }
