@@ -343,11 +343,13 @@ class QuestionEngine(
         } else {
             for (s in states) {
                 if (s.topic == "location.fix") continue
-                if (s.topic.startsWith("collector.")) {
-                    lines.add(collectorLine(s))
-                } else {
-                    lines.add(renderStateLine(s))
-                }
+                // Collector status transitions (granted/denied/paused)
+                // are availability facts — they belong to Position
+                // and the self-report, not to a narrative answer.
+                // "How did I get here?" must never read as a list of
+                // permission states.
+                if (s.topic.startsWith("collector.")) continue
+                lines.add(renderStateLine(s))
             }
         }
 
