@@ -120,6 +120,20 @@ class DeviceActionTest {
     }
 
     @Test
+    fun `an unrecognized command is never filed as a note`() {
+        val h = harnessWith { DeviceOutcome("ok") }
+        val r = h.say("order a pizza for delivery")
+        assertEquals(Intent.CLARIFY, r.intent, "a command halts visibly, naming the missing form: ${r.reply}")
+        assertTrue(r.reply.contains("don't have a form"), "the halt is honest about inaction: ${r.reply}")
+        assertTrue(
+            h.ledger.allEvents().none { it.kind == guardianlink.v2.core.EventKind.USER_REPORT },
+            "no user-report event was fabricated from a command",
+        )
+        val past = h.say("I ordered a pizza yesterday and it was late")
+        assertEquals(Intent.REPORT, past.intent, "a past-tense report still records normally: ${past.reply}")
+    }
+
+    @Test
     fun `what can you do answers capabilities, not evidence search`() {
         val h = harnessWith { DeviceOutcome("ok") }
         val r = h.say("what can u do?")
