@@ -411,6 +411,7 @@ class SettingsActivity : AppCompatActivity() {
         }
         status.text = when {
             brainDownloading -> "Downloading the brain…"
+            BrainPrefs.tripped(this) -> "The brain crashed the app while it was starting, so it stays off — no crash loop, and everything else works. If that was a one-off (another app had the phone under memory pressure), try it again below."
             present -> "On board: ${BrainStore.MODEL_LABEL}, running entirely on this phone. Any phrasing you use gets read here first — nothing you say leaves the device."
             else -> "Not downloaded yet. Until then, the fixed phrase forms carry simple commands. Download the brain and it reads any phrasing — proposes the action, shows it to you, fires only on your yes. Same as a cloud model, but ours: no key, no account, no network."
         }
@@ -440,7 +441,30 @@ class SettingsActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(10), 0, 0)
         }
-        if (!present) {
+        if (BrainPrefs.tripped(this)) {
+            row.addView(Button(this).apply {
+                text = "Try the brain again"
+                isAllCaps = false
+                setTextColor(Color.WHITE)
+                background = UiKit.rounded(this@SettingsActivity, palette.userBubble, 999f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) }
+                setOnClickListener {
+                    BrainPrefs.setTripped(this@SettingsActivity, false)
+                    build()
+                }
+            })
+            row.addView(Button(this).apply {
+                text = "Remove"
+                isAllCaps = false
+                setTextColor(palette.userBubble)
+                background = UiKit.rounded(this@SettingsActivity, palette.chipBg, 999f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                setOnClickListener {
+                    BrainStore.remove(this@SettingsActivity)
+                    build()
+                }
+            })
+        } else if (!present) {
             row.addView(Button(this).apply {
                 text = if (brainDownloading) "Downloading…" else "Download the brain (1.6 GB)"
                 isAllCaps = false
