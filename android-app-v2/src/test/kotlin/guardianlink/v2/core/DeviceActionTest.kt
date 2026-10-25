@@ -153,6 +153,22 @@ class DeviceActionTest {
     }
 
     @Test
+    fun `connect-email and meta-commands get pathways, not notes`() {
+        val h = harnessWith { DeviceOutcome("unused") }
+        val connect = h.say("let's connect my email so you can read it for context")
+        assertTrue(connect.reply.contains("Connected email"), "pathway given: ${connect.reply}")
+        val want = h.say("I want to use you to send an email")
+        assertEquals(Intent.CLARIFY, want.intent, "an under-specified command halts as a command: ${want.reply}")
+        val complaint = h.say("don't just record, you are supposed to actually do it")
+        assertTrue(complaint.reply.contains("pipeline"), "the complaint is heard: ${complaint.reply}")
+        assertEquals(
+            0,
+            h.ledger.liveEvents().count { it.kind == EventKind.USER_REPORT },
+            "none of the three became a filed note",
+        )
+    }
+
+    @Test
     fun `an unrecognized command is never filed as a note`() {
         val h = harnessWith { DeviceOutcome("ok") }
         val r = h.say("order a pizza for delivery")
