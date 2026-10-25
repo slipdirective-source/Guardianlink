@@ -149,6 +149,7 @@ class MainActivity : AppCompatActivity() {
             addBubble("Sensing stop requested.", fromUser = false)
         })
         chips.addView(chip("Pause location (governed)") { tryEngineAction() })
+        chips.addView(chip("Data vault") { openVault() })
         val chipRow = HorizontalScrollView(this).apply { addView(chips) }
 
         input = EditText(this).apply {
@@ -347,6 +348,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun openSettings() {
         startActivity(Intent(this, SettingsActivity::class.java))
+    }
+
+    private fun openVault() {
+        startActivity(Intent(this, VaultActivity::class.java))
     }
 
     private fun startSensing() {
