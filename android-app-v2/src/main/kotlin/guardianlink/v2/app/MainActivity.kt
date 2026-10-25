@@ -44,6 +44,7 @@ class MainActivity : AppCompatActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var renderedSignature: String = ""
+    private var renderSigAtCreate: String = ""
     private var seeded = false
 
     private val refreshLoop = object : Runnable {
@@ -58,31 +59,71 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val palette = GlPrefs.palette(this)
         postureLine = TextView(this).apply {
             textSize = 13f
-            setTextColor(Color.DKGRAY)
+            setTextColor(palette.headerSub)
             text = "Starting…"
         }
         val title = TextView(this).apply {
             textSize = 20f
-            setTextColor(Color.BLACK)
+            setTextColor(palette.headerText)
             text = "GuardianLink"
         }
-        val header = LinearLayout(this).apply {
+        val badge = TextView(this).apply {
+            text = "G"
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setTextColor(palette.headerBg)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(palette.headerText)
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+        }
+        val titleColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 28, 32, 8)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { setMargins(dp(12), 0, 0, 0) }
             addView(title)
             addView(postureLine)
+        }
+        val gear = Button(this).apply {
+            text = "⚙"
+            textSize = 19f
+            setTextColor(palette.headerText)
+            background = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
+            setOnClickListener { openSettings() }
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(palette.headerBg)
+            setPadding(dp(16), dp(14), dp(8), dp(14))
+            addView(badge)
+            addView(titleColumn)
+            addView(gear)
         }
 
         nowCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(28, 20, 28, 20)
-            background = rounded(Color.parseColor("#F4F6F7"), 18f)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }
+        // The Now card lives in its own fixed-height scroll region:
+        // however long the standing answers get, they scroll INSIDE
+        // the card and can never push the chat, the chips, or the
+        // input off the screen.
+        val nowScroll = ScrollView(this).apply {
+            background = rounded(palette.cardBg, 18f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(168),
             ).apply { setMargins(24, 8, 24, 8) }
+            addView(nowCard)
         }
 
         chatLog = LinearLayout(this).apply {
@@ -102,7 +143,6 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(16, 4, 16, 4)
         }
-        chips.addView(chip("Permissions") { openPermissions() })
         chips.addView(chip("Start sensing") { startSensing() })
         chips.addView(chip("Stop sensing") {
             startService(SensingService.stopIntent(this@MainActivity))
@@ -128,8 +168,9 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(palette.pageBg)
             addView(header)
-            addView(nowCard)
+            addView(nowScroll)
             addView(chatScroll)
             addView(chipRow)
             addView(inputRow)
@@ -140,10 +181,21 @@ class MainActivity : AppCompatActivity() {
             seedConversation()
         }
         renderNow()
+        renderSigAtCreate = GlPrefs.renderSignature(this)
+        if (GlPrefs.autoSense(this)) {
+            startSensing()
+        }
     }
 
     override fun onResume() {
         super.onResume()
+        // Appearance is set in Settings; if it changed while we were
+        // away, rebuild the screen under the new rendering rather than
+        // straddling two palettes.
+        if (renderSigAtCreate.isNotEmpty() && GlPrefs.renderSignature(this) != renderSigAtCreate) {
+            recreate()
+            return
+        }
         handler.post(refreshLoop)
     }
 
@@ -166,7 +218,7 @@ class MainActivity : AppCompatActivity() {
             addBubble(
                 "Still off: ${denied.joinToString(", ") { it.substringAfterLast('.') }}. " +
                     "Anything that needs those stays named as unavailable — nothing is faked for them. " +
-                    "You can revisit them any time from the Permissions chip.",
+                    "You can revisit them any time under Settings → Permissions (the ⚙ above).",
                 fromUser = false,
             )
         }
@@ -211,16 +263,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun addBubble(text: String, fromUser: Boolean) {
+        // Follow the conversation only when the sovereign is already
+        // at the bottom; if they've scrolled up to read, new data
+        // arriving must not yank the thread out from under them.
+        val child = chatScroll.getChildAt(0)
+        val nearBottom = child == null ||
+            chatScroll.scrollY + chatScroll.height >= child.height - dp(96)
+        val palette = GlPrefs.palette(this)
         val bubble = TextView(this).apply {
             this.text = text
-            textSize = 15f
+            textSize = GlPrefs.bubbleTextSp(this@MainActivity)
             setPadding(28, 20, 28, 20)
             if (fromUser) {
                 setTextColor(Color.WHITE)
-                background = rounded(Color.parseColor("#0F5257"), 28f)
+                background = rounded(palette.userBubble, 28f)
             } else {
-                setTextColor(Color.parseColor("#14181A"))
-                background = rounded(Color.parseColor("#E9EDEF"), 28f)
+                setTextColor(palette.appBubbleText)
+                background = rounded(palette.appBubble, 28f)
             }
         }
         val params = LinearLayout.LayoutParams(
@@ -231,7 +290,9 @@ class MainActivity : AppCompatActivity() {
             setMargins(8, 6, 8, 6)
         }
         chatLog.addView(bubble, params)
-        chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+        if (nearBottom) {
+            chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -251,23 +312,24 @@ class MainActivity : AppCompatActivity() {
             else -> "Starting the governed engine… the conversation is already live."
         }
 
+        val palette = GlPrefs.palette(this)
         nowCard.removeAllViews()
         nowCard.addView(TextView(this).apply {
             text = "NOW"
             textSize = 12f
-            setTextColor(Color.parseColor("#0F5257"))
+            setTextColor(palette.userBubble)
         })
         for (q in answers) {
             nowCard.addView(TextView(this).apply {
                 text = q.text
                 textSize = 13f
-                setTextColor(Color.DKGRAY)
+                setTextColor(palette.textSecondary)
                 setPadding(0, 12, 0, 0)
             })
             nowCard.addView(TextView(this).apply {
                 text = "${q.current.text}  ·  ${plainDelta(q.current.delta)}"
                 textSize = 14f
-                setTextColor(Color.parseColor("#14181A"))
+                setTextColor(palette.textPrimary)
             })
         }
     }
@@ -283,8 +345,8 @@ class MainActivity : AppCompatActivity() {
     // Sensing + permissions
     // ------------------------------------------------------------------
 
-    private fun openPermissions() {
-        startActivity(Intent(this, PermissionsActivity::class.java))
+    private fun openSettings() {
+        startActivity(Intent(this, SettingsActivity::class.java))
     }
 
     private fun startSensing() {
@@ -387,11 +449,22 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------
 
-    private fun chip(label: String, action: () -> Unit): Button = Button(this).apply {
-        text = label
-        isAllCaps = false
-        setOnClickListener { action() }
+    private fun chip(label: String, action: () -> Unit): Button {
+        val palette = GlPrefs.palette(this)
+        return Button(this).apply {
+            text = label
+            isAllCaps = false
+            setTextColor(palette.chipText)
+            background = rounded(palette.chipBg, 20f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { setMargins(dp(4), dp(2), dp(4), dp(2)) }
+            setOnClickListener { action() }
+        }
     }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun rounded(color: Int, radiusDp: Float): GradientDrawable = GradientDrawable().apply {
         setColor(color)
