@@ -70,6 +70,18 @@ dependencies {
     // The @aar artifact is the Android variant.
     implementation("net.java.dev.jna:jna:5.14.0@aar")
 
+    // Email collector: JavaMail's Android port — IMAP over SSL for
+    // the connected mailbox (EmailSync). Pinned to the long-stable
+    // 1.6.7 line; activation carries the MIME registry it needs.
+    implementation("com.sun.mail:android-mail:1.6.7")
+    implementation("com.sun.mail:android-activation:1.6.7")
+
+    // Health collector: Health Connect is Android's health bus —
+    // watches and health apps publish there, and this client reads
+    // what the sovereign granted (HealthConnectCollector).
+    implementation("androidx.health.connect:connect-client:1.1.0-alpha12")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
     // Same JUnit 5 line the engine's own tests use (root build.gradle.kts).
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.9.2")
