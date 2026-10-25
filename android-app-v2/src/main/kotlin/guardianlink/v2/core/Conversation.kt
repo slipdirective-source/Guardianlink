@@ -305,7 +305,7 @@ class Conversation(private val deps: ConversationDeps) {
             sb.append("• Answer from your record — ask me things like \"check my email\", \"what are you tracking?\", or \"search\" anything I've recorded.\n")
             sb.append("• Act when you command it, under your assent: pause or resume a collector, create a standing question, export the record")
             if (deps.actions.deviceActionsAvailable()) {
-                sb.append(", place a call (\"call Maria\"), send a text (\"text Maria saying…\"), send an email from your mailbox (\"email maria@example.com saying…\")")
+                sb.append(", place a call (\"call Maria\"), send a text (\"text Maria saying…\"), send an email from your mailbox (\"email maria@example.com saying…\"), and work the phone itself — open apps (\"open Gmail\"), tap and type inside them (\"tap Send\", \"type …\"), go back or home, and read the screen (\"read my screen\")")
             }
             sb.append(". Every action is proposed first, runs only on your yes or a rail you set, and its outcome lands in the record either way.\n")
             sb.append("• Keep the whole record in the Data vault — every reading, and the chain that proves it wasn't rewritten.")
@@ -367,6 +367,25 @@ class Conversation(private val deps: ConversationDeps) {
                 "Configuration set: ${configMatch.groupValues[1]} = ${configMatch.groupValues[2]}. Recorded and auditable.",
                 before,
             ).copy(admittedEventIds = listOf(ev.id))
+        }
+
+        // --- read the screen (before ask: "what's on my screen?" is
+        // a device action wearing question grammar; the answer is
+        // the screen's contents, not an evidence search) ---
+        if (Regex("^what'?s on (?:my )?screen\\b|^read (?:my )?screen\\b|^look at (?:my )?screen\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
+            val proposal = deps.actions.propose(
+                ProposalInput(
+                    actionType = "read_screen",
+                    target = "screen",
+                    parameters = emptyMap(),
+                    expectedEffect = "Read the current screen and report what's on it.",
+                    reversibility = Reversibility.REVERSIBLE,
+                    consequenceClass = ConsequenceClass.LOCAL,
+                    requiredAuthority = RequiredAuthority.FRESH_ASSENT,
+                    requestedBy = "sovereign",
+                ),
+            )
+            return finishProposal(proposal, before, "Action proposed: read the screen.")
         }
 
         // --- ask ---
@@ -589,6 +608,48 @@ class Conversation(private val deps: ConversationDeps) {
                 before,
                 "Who should I email, and what should it say?",
             )
+        }
+
+        // --- act: device control (the fingers) ---------------------
+        fun deviceProposal(type: String, target: String, params: Map<String, Any?>, effect: String, reversible: Reversibility = Reversibility.IRREVERSIBLE, cc: ConsequenceClass = ConsequenceClass.EXTERNAL): ConversationResult {
+            val proposal = deps.actions.propose(
+                ProposalInput(
+                    actionType = type,
+                    target = target,
+                    parameters = params,
+                    expectedEffect = effect,
+                    reversibility = reversible,
+                    consequenceClass = cc,
+                    requiredAuthority = RequiredAuthority.FRESH_ASSENT,
+                    requestedBy = "sovereign",
+                ),
+            )
+            return finishProposal(proposal, before, "Action proposed: $effect")
+        }
+        val pressMatch = Regex("^(?:go back|go home|show recents|open notifications)\\s*\\.?$", RegexOption.IGNORE_CASE).find(text)
+        if (pressMatch != null) {
+            val key = when {
+                lower.startsWith("go back") -> "back"
+                lower.startsWith("go home") -> "home"
+                lower.startsWith("show recents") -> "recents"
+                else -> "notifications"
+            }
+            return deviceProposal("device_press", key, mapOf("key" to key), "Press $key.")
+        }
+        val openMatch = Regex("^(?:please\\s+)?open\\s+(.+?)\\s*\\.?$", RegexOption.IGNORE_CASE).find(text)
+        if (openMatch != null && !lower.contains("collector")) {
+            val app = openMatch.groupValues[1].trim()
+            return deviceProposal("device_open_app", app, mapOf("app" to app), "Open $app.")
+        }
+        val tapMatch = Regex("^(?:tap|click)(?:\\s+on)?\\s+(.+?)\\s*\\.?$", RegexOption.IGNORE_CASE).find(text)
+        if (tapMatch != null) {
+            val what = tapMatch.groupValues[1].trim()
+            return deviceProposal("device_tap", what, mapOf("text" to what), "Tap \"$what\" on the current screen.")
+        }
+        val typeMatch = Regex("^type\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+        if (typeMatch != null) {
+            val typed = typeMatch.groupValues[1].trim()
+            return deviceProposal("device_type", "text field", mapOf("text" to typed), "Type \"$typed\" into the current field.")
         }
 
         // --- act: hard-denied ---
