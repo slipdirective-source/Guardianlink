@@ -259,6 +259,10 @@ class Conversation(private val deps: ConversationDeps) {
                 topic.startsWith("location") -> "location"
                 topic == "state.motion" -> "motion"
                 topic.startsWith("state.") -> "device state"
+                topic.startsWith("email") || topic.startsWith("inbox") -> "inbox and email"
+                topic.startsWith("calendar") -> "calendar"
+                topic.startsWith("finance") -> "finances"
+                topic.startsWith("health") -> "health"
                 else -> "other records"
             }
             val counts = live.groupingBy { family(it.topic) }.eachCount()
@@ -420,6 +424,113 @@ class Conversation(private val deps: ConversationDeps) {
                 ),
             )
             return finishProposal(proposal, before, "Action proposed: export the ledger.")
+        }
+
+        // --- query: account status --------------------------------
+        // "Check an account status" means: what does the record
+        // hold for the mailbox and the money — answered from the
+        // collectors' state and the ledger, never invented.
+        if (Regex("\\b(account status|check my (email|mail|account|inbox)|how many (new )?(emails|messages)|any new (email|mail)|unread)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
+            val live = deps.ledger.liveEvents()
+            val emails = live.filter { it.topic == "email.message" }
+            val finance = live.filter { it.topic.startsWith("finance") }
+            val emailCollector = deps.collectors.get("email")
+            val emailState = when (emailCollector?.status) {
+                CollectorStatus.ACTIVE -> "collecting"
+                CollectorStatus.PAUSED -> "paused" + (emailCollector.statusReason?.let { " — $it" } ?: "")
+                CollectorStatus.DENIED -> "off" + (emailCollector.statusReason?.let { " — $it" } ?: "")
+                null -> "not registered"
+            }
+            val sb = StringBuilder("Account status, from your record:\n")
+            sb.append("• Mailbox: $emailState. ${emails.size} message(s) on record")
+            emails.maxByOrNull { it.seq }?.let { sb.append("; latest — ${it.claim}") }
+            sb.append(".\n")
+            sb.append("• Finances: ${finance.size} alert(s) on record")
+            finance.maxByOrNull { it.seq }?.let { sb.append("; latest — ${it.claim}") }
+            sb.append(".\n")
+            sb.append("Sync runs while sensing is on (about every 15 minutes), or on demand in Settings → Connected email → Fetch now.")
+            return base(Intent.QUERY, sb.toString(), before)
+        }
+
+        // --- act: device actions (the phone, operated as him) ----
+        // A request becomes a proposal; policy, assent, and the
+        // record apply exactly as for any governed action. The
+        // platform handler executes only after assent (or a rail).
+        val callMatch = Regex("^(?:call|phone|dial)\\s+(.+?)\\s*\\.?$", RegexOption.IGNORE_CASE).find(text)
+        if (callMatch != null && !lower.contains("collector")) {
+            val who = callMatch.groupValues[1].trim()
+            val proposal = deps.actions.propose(
+                ProposalInput(
+                    actionType = "phone_call",
+                    target = who,
+                    parameters = mapOf("to" to who),
+                    expectedEffect = "Place a phone call to $who.",
+                    reversibility = Reversibility.IRREVERSIBLE,
+                    consequenceClass = ConsequenceClass.EXTERNAL,
+                    requiredAuthority = RequiredAuthority.FRESH_ASSENT,
+                    requestedBy = "sovereign",
+                ),
+            )
+            return finishProposal(proposal, before, "Action proposed: call $who.")
+        }
+        val textMatch = Regex("^send (?:a )?(?:text|message|sms) to\\s+(.+?)\\s+(?:saying|that says)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+            ?: Regex("^text\\s+(.+?)\\s+(?:saying|that says)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+            ?: Regex("^text\\s+(.+?)\\s*[:—]\\s*(.+)$", RegexOption.IGNORE_CASE).find(text)
+        if (textMatch != null) {
+            val who = textMatch.groupValues[1].trim()
+            val body = textMatch.groupValues[2].trim()
+            val proposal = deps.actions.propose(
+                ProposalInput(
+                    actionType = "send_text",
+                    target = who,
+                    parameters = mapOf("to" to who, "body" to body),
+                    expectedEffect = "Send a text to $who: \"$body\"",
+                    reversibility = Reversibility.IRREVERSIBLE,
+                    consequenceClass = ConsequenceClass.EXTERNAL,
+                    requiredAuthority = RequiredAuthority.FRESH_ASSENT,
+                    requestedBy = "sovereign",
+                ),
+            )
+            return finishProposal(proposal, before, "Action proposed: text $who.")
+        }
+        if (Regex("^send (?:a )?text\\s*\\.?$|^text\\s+\\S+\\s*\\.?$", RegexOption.IGNORE_CASE).containsMatchIn(lower) &&
+            !Regex("\\b(track|collector|question)\\b").containsMatchIn(lower)
+        ) {
+            return clarify(
+                Intent.CLARIFY,
+                "I can send it — I need who it's for and what it says, in one line: \"text Maria saying I'll be there at 7\".",
+                before,
+                "Who should I text, and what should it say?",
+            )
+        }
+        val emailMatch = Regex("^(?:send )?(?:an )?email to\\s+(\\S+@\\S+)\\s+(?:saying|that says)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+            ?: Regex("^(?:send )?(?:an )?email\\s+(\\S+@\\S+)\\s+(?:saying|that says)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+            ?: Regex("^(?:send )?(?:an )?email to\\s+(\\S+@\\S+)\\s*[:—]\\s*(.+)$", RegexOption.IGNORE_CASE).find(text)
+        if (emailMatch != null) {
+            val to = emailMatch.groupValues[1].trim()
+            val body = emailMatch.groupValues[2].trim()
+            val subject = body.lineSequence().firstOrNull()?.take(60) ?: "Message from GuardianLink"
+            val proposal = deps.actions.propose(
+                ProposalInput(
+                    actionType = "send_email",
+                    target = to,
+                    parameters = mapOf("to" to to, "subject" to subject, "body" to body),
+                    expectedEffect = "Send an email to $to from your connected mailbox: \"$subject\"",
+                    reversibility = Reversibility.IRREVERSIBLE,
+                    consequenceClass = ConsequenceClass.EXTERNAL,
+                    requiredAuthority = RequiredAuthority.FRESH_ASSENT,
+                    requestedBy = "sovereign",
+                ),
+            )
+            return finishProposal(proposal, before, "Action proposed: email $to.")
+        }
+        if (Regex("^send (?:an )?email\\s*\\.?$|^email\\s*\\.?$", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
+            return clarify(
+                Intent.CLARIFY,
+                "I can send it from your connected mailbox — I need the address and the message in one line: \"email maria@example.com saying the invoice is attached\".",
+                before,
+                "Who should I email, and what should it say?",
+            )
         }
 
         // --- act: hard-denied ---
