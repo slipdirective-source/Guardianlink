@@ -120,6 +120,27 @@ class DeviceActionTest {
     }
 
     @Test
+    fun `device control verbs propose and execute through the handler`() {
+        val seen = ArrayList<String>()
+        val h = harnessWith { p ->
+            seen += p.actionType
+            DeviceOutcome("Did ${p.actionType} on ${p.target}.")
+        }
+        h.say("open Gmail"); h.say("yes")
+        h.say("tap Send"); h.say("yes")
+        h.say("type Running late, see you at 7"); h.say("yes")
+        h.say("go back"); h.say("yes")
+        val read = h.say("what's on my screen?")
+        assertEquals(Intent.ACT, read.intent, "screen read is an action, not a search: ${read.reply}")
+        h.say("yes")
+        assertEquals(
+            listOf("device_open_app", "device_tap", "device_type", "device_press", "read_screen"),
+            seen,
+            "every finger verb reached the handler in order",
+        )
+    }
+
+    @Test
     fun `an unrecognized command is never filed as a note`() {
         val h = harnessWith { DeviceOutcome("ok") }
         val r = h.say("order a pizza for delivery")
