@@ -656,6 +656,26 @@ class Conversation(private val deps: ConversationDeps) {
             ).copy(proposal = proposal)
         }
 
+        // --- unrecognized command shape: never file a command as a note ---
+        // His ruling (2026-10-25, the Shannon message): the agent
+        // recorded the request and failed to execute — not because
+        // it couldn't, but because it never tried. An utterance
+        // shaped like a command that matched no action form must
+        // surface exactly that — "no form for it yet, nothing done"
+        // — with the forms that DO work. It never silently becomes
+        // a record.
+        val commandShaped =
+            Regex("^(send|call|text|email|message|dial|phone|open|remind|book|order|pay|schedule)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
+                Regex("\\b(i want you to|please|can you|could you|will you)\\s+(send|call|text|email|message|tell|open|remind|book|order|pay|schedule)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
+        if (commandShaped) {
+            return clarify(
+                Intent.CLARIFY,
+                "That reads as a command, and I don't have a form for it yet — so nothing was done with it, and I won't file it away as a note. The command forms I can run today: \"text Shannon saying …\", \"tell Shannon …\", \"call …\", \"email name@host saying …\", \"pause <collector>\". Say it in one of those and it goes proposal → your yes → executed, with the outcome recorded either way.",
+                before,
+                "Which form should that be?",
+            )
+        }
+
         // --- report (default for a declarative statement) ---
         val words = lower.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (words.size >= 3 || Regex("\\b(dose|cabinet|arrived)\\b").containsMatchIn(lower)) {
