@@ -169,6 +169,9 @@ class ActionLayer(private val deps: ActionDeps) {
 
     fun listRails(): List<Rail> = rails.toList()
 
+    /** Whether a platform device-action handler is attached in this build. */
+    fun deviceActionsAvailable(): Boolean = deps.deviceAction != null
+
     fun allProposals(): List<ActionProposal> = proposals.values.toList()
 
     /**
