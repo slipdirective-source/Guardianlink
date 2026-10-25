@@ -51,7 +51,7 @@ class SettingsActivity : AppCompatActivity() {
         // Build stamp: which build is actually running, readable at
         // a glance — install confusion costs more than the line.
         root.addView(TextView(this).apply {
-            text = "Build: 2026-10-25 · cosmic + LLM + wake"
+            text = "Build: 2026-10-25 · cosmic + LLM + wake + SMS fix"
             textSize = 12f
             setTextColor(GlPrefs.palette(this@SettingsActivity).textSecondary)
             setPadding(0, 0, 0, dp(10))
