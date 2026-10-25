@@ -190,6 +190,13 @@
                 android:resource="@xml/accessibility_config" />
         </service>
 
+        <!-- SMS send confirmation postbox: reached only by this
+             app's own PendingIntents (explicit component), which is
+             what lets the carrier's answer back in. -->
+        <receiver
+            android:name="guardianlink.v2.app.SmsSentReceiver"
+            android:exported="false" />
+
         <receiver
             android:name="guardianlink.v2.app.BootReceiver"
             android:exported="true">
