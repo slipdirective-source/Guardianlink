@@ -520,6 +520,14 @@ class SettingsActivity : AppCompatActivity() {
         count(ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED)
         count(ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED)
         count(ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED)
+        count(
+            try {
+                val enabled = android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
+                enabled.split(':').any { it.startsWith(packageName) }
+            } catch (e: Exception) {
+                false
+            },
+        )
         return "$on of $total core grants are on. Each has its own pathway — what it's for, its state, and the shortest route to change it."
     }
 
