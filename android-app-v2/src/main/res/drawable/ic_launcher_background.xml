@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cosmic field for the GL mark: deep violet falling to nebula. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="315"
+        android:startColor="#1B0A45"
+        android:centerColor="#3D1A96"
+        android:endColor="#7C5CFF"
+        android:type="linear" />
+</shape>
