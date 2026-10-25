@@ -153,6 +153,21 @@ class DeviceActionTest {
     }
 
     @Test
+    fun `the third screenshot's sentences all land`() {
+        val h = harnessWith { DeviceOutcome("Text sent to Shannon.") }
+        // Leading discourse word + contacts qualifier.
+        val r = h.say("now send a text to Shannon in my contacts telling her I love her")
+        assertTrue(r.reply.startsWith("Send this text?"), "review prompt: ${r.reply}")
+        assertTrue(r.reply.contains("To: Shannon"), "qualifier stripped from the name: ${r.reply}")
+        // His assent wording.
+        val done = h.say("execute the order")
+        assertTrue(done.reply.startsWith("Done"), "\"execute the order\" assents: ${done.reply}")
+        // "tell me" questions are questions.
+        val where = h.say("tell me where I am")
+        assertEquals(Intent.ASK, where.intent, "tell-me-where is an ask: ${where.reply}")
+    }
+
+    @Test
     fun `connect-email and meta-commands get pathways, not notes`() {
         val h = harnessWith { DeviceOutcome("unused") }
         val connect = h.say("let's connect my email so you can read it for context")
