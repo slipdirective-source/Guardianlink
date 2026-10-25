@@ -171,6 +171,23 @@
             </intent-filter>
         </service>
 
+        <!-- Device control ("fingers"): acts inside other apps ONLY
+             when a governed proposal clears assent and DeviceControl
+             invokes it. Inert on its own; enabled by the sovereign
+             in system accessibility settings. -->
+        <service
+            android:name="guardianlink.v2.app.GlAccessibilityService"
+            android:label="GuardianLink device control"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_config" />
+        </service>
+
         <receiver
             android:name="guardianlink.v2.app.BootReceiver"
             android:exported="true">
