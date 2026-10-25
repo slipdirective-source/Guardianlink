@@ -287,6 +287,31 @@ class Conversation(private val deps: ConversationDeps) {
             return base(Intent.QUERY, sb.toString(), before)
         }
 
+        // --- capabilities: "what can you do?" ----------------------
+        // A capability question is about the system, not the record.
+        // Answering it from evidence search ("nothing on record
+        // about that") is a category error — this branch composes
+        // the answer from the live registry and the action layer.
+        if (Regex("\\bwhat can (you|u) do\\b|\\bwhat do you do\\b|\\byour (capabilities|abilities|features)\\b|^help\\s*\\.?$|\\bwhat are you able to\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
+            val collectors = deps.collectors.all()
+            val active = collectors.filter { it.status == CollectorStatus.ACTIVE }.map { it.name }
+            val off = collectors.filter { it.status != CollectorStatus.ACTIVE }
+            val sb = StringBuilder("Here's what I can do, as I stand right now:\n")
+            sb.append("• Keep your standing answers current — where you are, how you got here, what's moving, what's next — from what this phone senses.\n")
+            if (active.isNotEmpty()) sb.append("• Collecting now: ${active.joinToString(", ")}.\n")
+            for (c in off) {
+                sb.append("• ${c.name} is ${if (c.status == CollectorStatus.PAUSED) "paused" else "off"}${c.statusReason?.let { " — $it" } ?: ""}. Its pathway is in Settings → Permissions.\n")
+            }
+            sb.append("• Answer from your record — ask me things like \"check my email\", \"what are you tracking?\", or \"search\" anything I've recorded.\n")
+            sb.append("• Act when you command it, under your assent: pause or resume a collector, create a standing question, export the record")
+            if (deps.actions.deviceActionsAvailable()) {
+                sb.append(", place a call (\"call Maria\"), send a text (\"text Maria saying…\"), send an email from your mailbox (\"email maria@example.com saying…\")")
+            }
+            sb.append(". Every action is proposed first, runs only on your yes or a rail you set, and its outcome lands in the record either way.\n")
+            sb.append("• Keep the whole record in the Data vault — every reading, and the chain that proves it wasn't rewritten.")
+            return base(Intent.QUERY, sb.toString(), before)
+        }
+
         // --- create a standing question (governed act) ---
         val trackMatch = Regex("\\b(?:keep track of|track|watch)\\s+(.+?)\\.?$", RegexOption.IGNORE_CASE).find(text)
         if (trackMatch != null && Regex("\\b(whether|if|of)\\b", RegexOption.IGNORE_CASE).containsMatchIn(trackMatch.groupValues[1])) {
