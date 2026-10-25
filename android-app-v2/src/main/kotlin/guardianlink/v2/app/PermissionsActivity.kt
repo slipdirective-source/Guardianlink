@@ -39,6 +39,49 @@ class PermissionsActivity : AppCompatActivity() {
 
     private lateinit var list: LinearLayout
 
+    private val healthPermsLauncher =
+        registerForActivityResult(
+            androidx.health.connect.client.PermissionController.createRequestPermissionsResultContract(),
+        ) { buildRows() }
+
+    /** Health Connect grants live in Health Connect, not the runtime permission store. */
+    private fun healthGranted(): Boolean = try {
+        if (androidx.health.connect.client.HealthConnectClient.getSdkStatus(this) !=
+            androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE
+        ) {
+            false
+        } else {
+            val client = androidx.health.connect.client.HealthConnectClient.getOrCreate(this)
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(2_000) {
+                    client.permissionController.getGrantedPermissions()
+                        .containsAll(HealthConnectCollector.PERMISSIONS)
+                } ?: false
+            }
+        }
+    } catch (t: Throwable) {
+        false
+    }
+
+    private fun requestHealthPermissions() {
+        try {
+            if (androidx.health.connect.client.HealthConnectClient.getSdkStatus(this) !=
+                androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE
+            ) {
+                Toast.makeText(this, "Health Connect isn't available on this phone.", Toast.LENGTH_LONG).show()
+                return
+            }
+            healthPermsLauncher.launch(HealthConnectCollector.PERMISSIONS)
+        } catch (t: Throwable) {
+            // Fall back to the Health Connect home, where grants live.
+            try {
+                startActivity(Intent("androidx.health.connect.action.HEALTH_HOME_SETTINGS"))
+            } catch (e: Exception) {
+                openAppDetails()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val palette = GlPrefs.palette(this)
@@ -225,6 +268,83 @@ class PermissionsActivity : AppCompatActivity() {
             )
         }
 
+        // -- Device actions: call / text / contacts --------------------
+        val callGranted = granted(Manifest.permission.CALL_PHONE)
+        out += Row(
+            title = "Phone calls",
+            why = "Lets a governed action place a call when you command it — \"call Maria\", your assent, the call goes out, the outcome lands in your record.",
+            granted = callGranted,
+            statusText = if (callGranted) "On — call actions can execute." else "Off — call actions stop and say why.",
+            actionLabel = if (callGranted) null else "Allow",
+            action = if (callGranted) null else ({
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CALL_PHONE), REQ_CALL)
+            }),
+        )
+        val smsGranted = granted(Manifest.permission.SEND_SMS)
+        out += Row(
+            title = "Text messages",
+            why = "Lets a governed action send a text when you command it — \"text Maria saying…\", your assent, sent with carrier confirmation recorded.",
+            granted = smsGranted,
+            statusText = if (smsGranted) "On — text actions can execute." else "Off — text actions stop and say why.",
+            actionLabel = if (smsGranted) null else "Allow",
+            action = if (smsGranted) null else ({
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.SEND_SMS), REQ_SMS)
+            }),
+        )
+        val contactsGranted = granted(Manifest.permission.READ_CONTACTS)
+        out += Row(
+            title = "Contacts",
+            why = "Resolves names to numbers for calls and texts, and reads names for context. Read-only; GuardianLink never writes your contacts.",
+            granted = contactsGranted,
+            statusText = if (contactsGranted) "On — names resolve to numbers." else "Off — commands must use raw numbers.",
+            actionLabel = if (contactsGranted) null else "Allow",
+            action = if (contactsGranted) null else ({
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_CONTACTS), REQ_CONTACTS)
+            }),
+        )
+
+        // -- Health Connect ----------------------------------------------
+        val healthGranted = healthGranted()
+        out += Row(
+            title = "Health (Health Connect)",
+            why = "Steps, heart rate, sleep, blood oxygen, and weight from Health Connect — where your watch and health apps publish. Read-only summaries enter your record while sensing runs.",
+            granted = healthGranted,
+            statusText = if (healthGranted) "On — health readings enter your record." else "Off — the health collector names itself unavailable.",
+            actionLabel = if (healthGranted) null else "Grant in Health Connect",
+            action = if (healthGranted) null else ({ requestHealthPermissions() }),
+        )
+
+        // -- Notification access (special grant) -----------------------
+        val notifAccess = androidx.core.app.NotificationManagerCompat
+            .getEnabledListenerPackages(this).contains(packageName)
+        out += Row(
+            title = "Notification access",
+            why = "Lets GuardianLink read the mail and message notifications your own apps post — the context those apps surface, without reaching into the apps themselves. Governed by the notifications collector: pause it and the stream stops.",
+            granted = notifAccess,
+            statusText = if (notifAccess) "On — mail/message notifications enter your record." else "Off — no notification context is collected.",
+            actionLabel = if (notifAccess) null else "Open Settings",
+            action = if (notifAccess) null else ({
+                try {
+                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                } catch (e: Exception) {
+                    openAppDetails()
+                }
+            }),
+        )
+
+        // -- Calendar ---------------------------------------------------
+        val calGranted = granted(Manifest.permission.READ_CALENDAR)
+        out += Row(
+            title = "Calendar",
+            why = "Your phone's calendar as context: what's next, what's today. Read-only — GuardianLink never writes to your calendar.",
+            granted = calGranted,
+            statusText = if (calGranted) "On — calendar events enter your record while sensing runs." else "Off — the calendar collector names itself unavailable.",
+            actionLabel = if (calGranted) null else "Allow",
+            action = if (calGranted) null else ({
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_CALENDAR), REQ_CALENDAR)
+            }),
+        )
+
         // -- Battery exemption -----------------------------------------
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         val batteryExempt = pm.isIgnoringBatteryOptimizations(packageName)
@@ -312,5 +432,9 @@ class PermissionsActivity : AppCompatActivity() {
         private const val REQ_MIC = 3103
         private const val REQ_NOTIFICATIONS = 3104
         private const val REQ_MOTION = 3105
+        private const val REQ_CALENDAR = 3106
+        private const val REQ_CALL = 3107
+        private const val REQ_SMS = 3108
+        private const val REQ_CONTACTS = 3109
     }
 }
