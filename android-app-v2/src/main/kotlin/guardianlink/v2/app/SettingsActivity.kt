@@ -51,7 +51,7 @@ class SettingsActivity : AppCompatActivity() {
         // Build stamp: which build is actually running, readable at
         // a glance — install confusion costs more than the line.
         root.addView(TextView(this).apply {
-            text = "Build: 2026-10-25 · natural forms 3 (conjunctions)"
+            text = "Build: 2026-10-25 · cosmic + LLM + wake"
             textSize = 12f
             setTextColor(GlPrefs.palette(this@SettingsActivity).textSecondary)
             setPadding(0, 0, 0, dp(10))
@@ -166,6 +166,14 @@ class SettingsActivity : AppCompatActivity() {
         // ---------------- Connected email ----------------
         section("Connected email")
         emailCard(palette)
+
+        // ---------------- Language model ----------------
+        section("Language model")
+        llmCard(palette)
+
+        // ---------------- Wake phrase ----------------
+        section("Wake phrase")
+        wakeCard(palette)
 
         // ---------------- Permissions ----------------
         section("Permissions")
@@ -377,6 +385,227 @@ class SettingsActivity : AppCompatActivity() {
      * the Keystore-backed store. Sync admits new mail as evidence;
      * the chat answers "what's in my email" from the record.
      */
+    private fun llmCard(palette: GlPrefs.Palette) {
+        val card = UiKit.cardView(this, palette, 14f)
+        val store = LlmConfigStore(this)
+        val config = store.load()
+        card.addView(TextView(this).apply {
+            text = "Intent reader"
+            textSize = 15.5f
+            setTextColor(palette.textPrimary)
+        })
+        if (config == null) {
+            card.addView(bodyLine("Not connected. The built-in phrase forms carry simple commands; a language model reads everything else — any phrasing you use — and proposes the action for your say-so. It never acts itself: the same registry, review prompt, and assent apply.", palette))
+            card.addView(bodyLine("Bring your own key (OpenAI, Grok, OpenRouter, or any OpenAI-compatible endpoint). The key is sealed on this phone; utterances the forms can't read are sent to your provider for parsing.", palette))
+        } else {
+            card.addView(bodyLine("Connected: ${config.model} via ${config.baseUrl}", palette))
+            card.addView(bodyLine("Utterances no built-in form matches are read by the model; the reading is recorded as agent-derived evidence with its confidence.", palette))
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        row.addView(Button(this).apply {
+            text = if (config == null) "Connect a model" else "Change model"
+            isAllCaps = false
+            setTextColor(Color.WHITE)
+            background = UiKit.rounded(this@SettingsActivity, palette.userBubble, 999f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) }
+            setOnClickListener { showLlmDialog(config) }
+        })
+        if (config != null) {
+            row.addView(Button(this).apply {
+                text = "Test reading"
+                isAllCaps = false
+                setTextColor(palette.userBubble)
+                background = UiKit.rounded(this@SettingsActivity, palette.chipBg, 999f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(6), 0, dp(6), 0) }
+                setOnClickListener {
+                    Toast.makeText(this@SettingsActivity, "Asking the model to read a test sentence…", Toast.LENGTH_SHORT).show()
+                    kotlin.concurrent.thread(isDaemon = true) {
+                        val result = CloudLanguagePort(this@SettingsActivity).testReading()
+                        runOnUiThread { Toast.makeText(this@SettingsActivity, result, Toast.LENGTH_LONG).show() }
+                    }
+                }
+            })
+            row.addView(Button(this).apply {
+                text = "Disconnect"
+                isAllCaps = false
+                setTextColor(palette.userBubble)
+                background = UiKit.rounded(this@SettingsActivity, palette.chipBg, 999f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                setOnClickListener {
+                    LlmConfigStore(this@SettingsActivity).clear()
+                    build()
+                }
+            })
+        }
+        card.addView(row)
+        root.addView(card)
+    }
+
+    private fun showLlmDialog(existing: LlmConfig?) {
+        val palette = GlPrefs.palette(this)
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+        }
+        fun field(hint: String, initial: String, password: Boolean = false): android.widget.EditText =
+            android.widget.EditText(this).apply {
+                this.hint = hint
+                setText(initial)
+                textSize = 15f
+                if (password) {
+                    inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                }
+            }
+        val base = field("Base URL", existing?.baseUrl ?: "https://api.openai.com/v1")
+        val model = field("Model", existing?.model ?: "gpt-4o-mini")
+        val key = field("API key", "", password = true)
+        val presets = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, dp(6))
+        }
+        for ((label, presetBase, presetModel) in listOf(
+            Triple("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+            Triple("Grok", "https://api.x.ai/v1", "grok-4-fast"),
+            Triple("OpenRouter", "https://openrouter.ai/api/v1", "openai/gpt-4o-mini"),
+        )) {
+            presets.addView(Button(this).apply {
+                text = label
+                isAllCaps = false
+                layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { setMargins(dp(2), 0, dp(2), 0) }
+                setOnClickListener {
+                    base.setText(presetBase)
+                    model.setText(presetModel)
+                }
+            })
+        }
+        form.addView(presets)
+        form.addView(base)
+        form.addView(model)
+        form.addView(key)
+        form.addView(TextView(this).apply {
+            text = "Leave the key blank to keep the saved one. Presets fill the endpoint and a sensible default model — both stay editable."
+            textSize = 12.5f
+            setTextColor(palette.textSecondary)
+            setPadding(0, dp(8), 0, 0)
+        })
+        AlertDialog.Builder(this)
+            .setTitle("Connect a language model")
+            .setView(form)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                val b = base.text.toString().trim()
+                val m = model.text.toString().trim()
+                val k = key.text.toString().trim().ifBlank { existing?.apiKey ?: "" }
+                if (b.isBlank() || m.isBlank() || k.isBlank()) {
+                    Toast.makeText(this, "Base URL, model, and API key are all required.", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                LlmConfigStore(this).save(LlmConfig(b, m, k))
+                build()
+            }
+            .show()
+    }
+
+    private fun wakeCard(palette: GlPrefs.Palette) {
+        val card = UiKit.cardView(this, palette, 14f)
+        card.addView(TextView(this).apply {
+            text = "Hands-free summon"
+            textSize = 15.5f
+            setTextColor(palette.textPrimary)
+        })
+        val phrase = WakePrefs.phrase(this)
+        val enabled = WakePrefs.enabled(this)
+        val modelReady = WakeWordEngine.modelInstalled(this)
+        card.addView(bodyLine("Say \"$phrase\" and GuardianLink opens listening — the phrase is spotted on this phone (Vosk, offline); no audio leaves the device and nothing is recorded before the phrase. You can change the phrase to any handle you like.", palette))
+        card.addView(bodyLine(
+            when {
+                !enabled -> "Off."
+                !modelReady -> "On, but the offline voice model (~40 MB) isn't downloaded yet."
+                else -> "On — listening for \"$phrase\" while sensing runs."
+            },
+            palette,
+        ))
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        row.addView(Button(this).apply {
+            text = if (enabled) "Turn off" else "Turn on"
+            isAllCaps = false
+            setTextColor(Color.WHITE)
+            background = UiKit.rounded(this@SettingsActivity, palette.userBubble, 999f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) }
+            setOnClickListener {
+                WakePrefs.setEnabled(this@SettingsActivity, !enabled)
+                build()
+            }
+        })
+        row.addView(Button(this).apply {
+            text = "Set phrase"
+            isAllCaps = false
+            setTextColor(palette.userBubble)
+            background = UiKit.rounded(this@SettingsActivity, palette.chipBg, 999f)
+            layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(6), 0, dp(6), 0) }
+            setOnClickListener { showWakePhraseDialog(phrase) }
+        })
+        if (!modelReady) {
+            row.addView(Button(this).apply {
+                text = "Get model"
+                isAllCaps = false
+                setTextColor(palette.userBubble)
+                background = UiKit.rounded(this@SettingsActivity, palette.chipBg, 999f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                setOnClickListener {
+                    Toast.makeText(this@SettingsActivity, "Downloading the offline voice model (~40 MB)…", Toast.LENGTH_SHORT).show()
+                    WakeWordEngine.downloadModel(this@SettingsActivity) { ok ->
+                        runOnUiThread {
+                            Toast.makeText(
+                                this@SettingsActivity,
+                                if (ok) "Voice model ready." else "Download failed — check the connection and try again.",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                            build()
+                        }
+                    }
+                }
+            })
+        }
+        card.addView(row)
+        root.addView(card)
+    }
+
+    private fun showWakePhraseDialog(current: String) {
+        val input = android.widget.EditText(this).apply {
+            setText(current)
+            textSize = 15f
+            hint = "Wake phrase, e.g. Hey Guard"
+        }
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Wake phrase")
+            .setView(form)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                val phrase = input.text.toString().trim()
+                if (phrase.split(Regex("\\s+")).filter { it.isNotEmpty() }.size >= 2) {
+                    WakePrefs.setPhrase(this, phrase)
+                    build()
+                } else {
+                    Toast.makeText(this, "Use at least two words — short phrases false-trigger.", Toast.LENGTH_LONG).show()
+                }
+            }
+            .show()
+    }
+
     private fun emailCard(palette: GlPrefs.Palette) {
         val card = UiKit.cardView(this, palette, 14f)
         val store = EmailAccountStore(this)
