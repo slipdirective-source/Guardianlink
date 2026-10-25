@@ -230,6 +230,7 @@ class GuardianLinkV2App : Application() {
             val restored = StateStore.load(
                 storage, STORE_NAME, zkBridge = NativeZkBridge,
                 deviceActionHandler = { proposal -> PhoneActions.handle(this, proposal) },
+                languagePort = CloudLanguagePort(this),
             )
             if (restored != null) {
                 persistenceStatus =
@@ -240,7 +241,7 @@ class GuardianLinkV2App : Application() {
             } else {
                 persistenceStatus =
                     "No persisted core state yet; starting fresh. State is written to the encrypted store at save points."
-                GuardianLink(zkBridge = NativeZkBridge, deviceActionHandler = { proposal -> PhoneActions.handle(this, proposal) })
+                GuardianLink(zkBridge = NativeZkBridge, deviceActionHandler = { proposal -> PhoneActions.handle(this, proposal) }, languagePort = CloudLanguagePort(this))
             }
         } catch (e: StateStoreException) {
             persistenceError = e
@@ -249,7 +250,7 @@ class GuardianLinkV2App : Application() {
                 "The saved state was NOT loaded and will NOT be overwritten; " +
                 "this session runs on an empty in-memory core only."
             Log.e(TAG, persistenceStatus, e)
-            GuardianLink(zkBridge = NativeZkBridge, deviceActionHandler = { proposal -> PhoneActions.handle(this, proposal) })
+            GuardianLink(zkBridge = NativeZkBridge, deviceActionHandler = { proposal -> PhoneActions.handle(this, proposal) }, languagePort = CloudLanguagePort(this))
         }
     }
 
