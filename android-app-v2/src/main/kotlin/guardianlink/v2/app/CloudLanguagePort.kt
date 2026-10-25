@@ -32,7 +32,7 @@ class CloudLanguagePort(context: Context) : LanguagePort {
         if (config.apiKey.isBlank() || config.baseUrl.isBlank() || config.model.isBlank()) return null
         return try {
             val raw = complete(config, utterance) ?: return null
-            decode(raw)
+            IntentJson.decode(raw)
         } catch (e: Exception) {
             null
         }
@@ -43,7 +43,7 @@ class CloudLanguagePort(context: Context) : LanguagePort {
         val config = store.load() ?: return "No language model is connected."
         val intent = try {
             val raw = complete(config, "send Shannon a text telling her I love her") ?: return "The provider returned nothing — check the key and model."
-            decode(raw) ?: return "The provider answered, but not in a readable intent shape."
+            IntentJson.decode(raw) ?: return "The provider answered, but not in a readable intent shape."
         } catch (e: Exception) {
             return "Couldn't reach the provider: ${e.message ?: e.javaClass.simpleName}"
         }
@@ -72,44 +72,9 @@ class CloudLanguagePort(context: Context) : LanguagePort {
         return message["content"] as? String
     }
 
-    private fun decode(raw: String): StructuredIntent? {
-        val start = raw.indexOf('{')
-        val end = raw.lastIndexOf('}')
-        if (start < 0 || end <= start) return null
-        val obj = JsonParser.parse(raw.substring(start, end + 1)) as? Map<*, *> ?: return null
-        val kind = obj["kind"] as? String ?: return null
-        @Suppress("UNCHECKED_CAST")
-        val paramsRaw = obj["params"] as? Map<String, Any?>
-        val params = paramsRaw?.mapValues { (_, v) -> v?.toString() ?: "" } ?: emptyMap()
-        val confidence = (obj["confidence"] as? Number)?.toDouble() ?: 0.0
-        return StructuredIntent(
-            kind = kind,
-            actionType = obj["actionType"] as? String,
-            params = params,
-            confidence = confidence,
-        )
-    }
-
     private fun buildRequestJson(model: String, utterance: String): String {
-        val system = """
-            You are the intent reader for GuardianLink, a governed personal assistant.
-            Read the user's utterance and return ONLY a JSON object, no other text:
-            {"kind":"act"|"ask"|"report"|"none","actionType":<one of the registry or null>,"params":{...},"confidence":<0.0-1.0>}
-            Registry (the ONLY actions that exist):
-            - send_text: params to (person name or number), body (exact message text)
-            - phone_call: params to
-            - send_email: params to (address or name), subject (may be ""), body
-            - device_open_app: params app
-            - device_tap: params text (the on-screen label to tap)
-            - device_type: params text (text to type into the focused field)
-            - device_press: params key (back|home|recents|notifications)
-            - read_screen: no params
-            Rules: extract the message body exactly as the user worded it, minus the command framing.
-            Resolve pronouns ("tell her I love her" → body "I love her").
-            If the utterance is not a command, kind is "ask" or "report" and actionType is null.
-            If a command names an action outside the registry, kind is "none".
-            Confidence reflects how certain the reading is.
-        """.trimIndent()
+        val system = IntentJson.SYSTEM_PROMPT
+        
         return "{\"model\":${jsonString(model)},\"temperature\":0,\"messages\":[" +
             "{\"role\":\"system\",\"content\":${jsonString(system)}}," +
             "{\"role\":\"user\",\"content\":${jsonString(utterance)}}]}"
