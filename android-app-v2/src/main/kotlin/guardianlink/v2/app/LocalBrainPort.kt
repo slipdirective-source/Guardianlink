@@ -92,6 +92,8 @@ class LocalBrainPort(context: Context) : LanguagePort {
         sb.append("<|im_start|>system\n").append(IntentJson.SYSTEM_PROMPT).append("<|im_end|>\n")
         sb.append("<|im_start|>user\ntext my brother and tell him dinner is at 7<|im_end|>\n")
         sb.append("<|im_start|>assistant\n{\"kind\":\"act\",\"actionType\":\"send_text\",\"params\":{\"to\":\"brother\",\"body\":\"dinner is at 7\"},\"confidence\":0.95}<|im_end|>\n")
+        sb.append("<|im_start|>user\ntell Shannon I love her, with hearts and kisses emojis<|im_end|>\n")
+        sb.append("<|im_start|>assistant\n{\"kind\":\"act\",\"actionType\":\"send_text\",\"params\":{\"to\":\"Shannon\",\"body\":\"I love you ❤️😘\"},\"confidence\":0.95}<|im_end|>\n")
         sb.append("<|im_start|>user\nwhere am i right now<|im_end|>\n")
         sb.append("<|im_start|>assistant\n{\"kind\":\"ask\",\"actionType\":null,\"params\":{},\"confidence\":0.9}<|im_end|>\n")
         sb.append("<|im_start|>user\n").append(utterance).append("<|im_end|>\n")
