@@ -86,7 +86,12 @@ class AcceptanceTest {
         assertEquals(Basis.OBSERVED, pos.basis)
         h.admitSensor("location", "location", "Arrived at the shop", confidence = 0.93)
         val traj = h.questions.get("trajectory")!!.current
-        assertTrue(traj.text.contains("movement: Arrived at Home -> Arrived at the shop"))
+        // Surface-register divergence from the TS text format, by the
+        // sovereign's directive (2026-10-25): the movement summary is
+        // prose ("Movement: A → B"), not the terminal "movement: A -> B"
+        // line. The behavior pinned here — first and latest place,
+        // in order — is unchanged.
+        assertTrue(traj.text.contains("Movement: Arrived at Home → Arrived at the shop"))
     }
 
     /* §6.5 Change query composes deltas over the interval */
