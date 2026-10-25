@@ -48,6 +48,14 @@ class SettingsActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(8))
         }
+        // Build stamp: which build is actually running, readable at
+        // a glance — install confusion costs more than the line.
+        root.addView(TextView(this).apply {
+            text = "Build: 2026-10-25 · natural forms 3 (conjunctions)"
+            textSize = 12f
+            setTextColor(GlPrefs.palette(this@SettingsActivity).textSecondary)
+            setPadding(0, 0, 0, dp(10))
+        })
         val scroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
