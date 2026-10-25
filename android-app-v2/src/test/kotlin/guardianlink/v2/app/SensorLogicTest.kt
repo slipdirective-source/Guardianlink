@@ -1,6 +1,7 @@
 package guardianlink.v2.app
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -85,15 +86,16 @@ class SensorLogicTest {
     }
 
     @Test
-    fun `place claim leads with the place and keeps the fix as evidence`() {
-        val claim = LocationLogic.formatPlaceClaim(
-            "Scottsburg, Scott County, Indiana", 38.68632, -85.77766, 8.0, LocationLogic.PROVIDER_GPS, lastKnown = false,
-        )
-        assertTrue(claim.startsWith("You are near Scottsburg, Scott County, Indiana"), "place leads: $claim")
-        assertTrue(claim.contains("38.68632"), "coordinates stay in the claim as evidence: $claim")
-        val noPlace = LocationLogic.formatPlaceClaim(null, 38.68632, -85.77766, null, LocationLogic.PROVIDER_NETWORK, lastKnown = true)
-        assertTrue(noPlace.contains("place name unavailable"), "an unresolved place is named as such: $noPlace")
+    fun `place claim is place prose only and the raw fix is a separate vault readout`() {
+        val claim = LocationLogic.formatPlaceClaim("Scottsburg, Scott County, Indiana", lastKnown = false)
+        assertEquals("You are near Scottsburg, Scott County, Indiana", claim)
+        assertFalse(claim.contains("38.68"), "no coordinates in the answer — raw readouts live in the vault: $claim")
+        val noPlace = LocationLogic.formatPlaceClaim(null, lastKnown = true)
+        assertTrue(noPlace.contains("place name not resolved"), "an unresolved place is named as such: $noPlace")
         assertTrue(noPlace.contains("(last known fix)"), "staleness survives the place formatting: $noPlace")
+        val fix = LocationLogic.formatFixDetail(38.68632, -85.77766, 8.0, LocationLogic.PROVIDER_GPS, lastKnown = false)
+        assertTrue(fix.contains("38.68632") && fix.contains("-85.77766"), "the vault readout keeps the coordinates: $fix")
+        assertTrue(fix.contains("±8m") || fix.contains("8m"), "the vault readout keeps the accuracy: $fix")
     }
 
     @Test
