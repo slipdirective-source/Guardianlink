@@ -21,6 +21,8 @@ object GlPrefs {
     private const val KEY_AUTOSENSE = "auto_sense"
 
     val ACCENTS: List<Pair<String, Int>> = listOf(
+        "Cosmos" to Color.parseColor("#7C5CFF"),
+        "Stardust" to Color.parseColor("#00B8D9"),
         "Deep teal" to Color.parseColor("#0F5257"),
         "Indigo" to Color.parseColor("#3F51B5"),
         "Crimson" to Color.parseColor("#8E2434"),
@@ -104,35 +106,41 @@ object GlPrefs {
     fun palette(context: Context): Palette {
         val dark = isDark(context)
         val accent = accentColor(context)
+        // Cosmic in both modes (his ruling, 2026-10-25: bubbly,
+        // futuristic, cosmic — the flat slate/teal is retired).
+        // Dark is deep space; light is nebula mist with the same
+        // deep-violet header, so the identity holds either way.
+        // The chosen accent still runs through user bubbles, pills,
+        // and highlights.
         return if (dark) {
             Palette(
-                pageBg = Color.parseColor("#10161A"),
-                headerBg = accent,
+                pageBg = Color.parseColor("#0A0618"),
+                headerBg = Color.parseColor("#1E1050"),
                 headerText = Color.WHITE,
-                headerSub = Color.parseColor("#D7E3E6"),
-                cardBg = Color.parseColor("#1C2429"),
-                appBubble = Color.parseColor("#26313A"),
-                appBubbleText = Color.parseColor("#E8ECEE"),
+                headerSub = Color.parseColor("#CFC6FF"),
+                cardBg = Color.parseColor("#1C1245"),
+                appBubble = Color.parseColor("#251A5C"),
+                appBubbleText = Color.parseColor("#F0EBFF"),
                 userBubble = accent,
-                textPrimary = Color.parseColor("#E8ECEE"),
-                textSecondary = Color.parseColor("#9AA7AD"),
-                chipBg = Color.parseColor("#26313A"),
-                chipText = Color.parseColor("#E8ECEE"),
+                textPrimary = Color.parseColor("#F2EFFF"),
+                textSecondary = Color.parseColor("#A79FD1"),
+                chipBg = Color.parseColor("#2A1C66"),
+                chipText = Color.parseColor("#EDE8FF"),
             )
         } else {
             Palette(
-                pageBg = Color.WHITE,
-                headerBg = accent,
+                pageBg = Color.parseColor("#F4F1FF"),
+                headerBg = Color.parseColor("#2A1666"),
                 headerText = Color.WHITE,
-                headerSub = Color.parseColor("#E2EEF0"),
-                cardBg = Color.parseColor("#F4F6F7"),
-                appBubble = Color.parseColor("#E9EDEF"),
-                appBubbleText = Color.parseColor("#14181A"),
+                headerSub = Color.parseColor("#D9D2FF"),
+                cardBg = Color.parseColor("#FDFCFF"),
+                appBubble = Color.parseColor("#EAE5FF"),
+                appBubbleText = Color.parseColor("#1B1245"),
                 userBubble = accent,
-                textPrimary = Color.parseColor("#14181A"),
-                textSecondary = Color.parseColor("#5A666D"),
-                chipBg = Color.parseColor("#E9EDEF"),
-                chipText = Color.parseColor("#14181A"),
+                textPrimary = Color.parseColor("#1B1245"),
+                textSecondary = Color.parseColor("#5E5890"),
+                chipBg = Color.parseColor("#EAE5FF"),
+                chipText = Color.parseColor("#2A1666"),
             )
         }
     }
