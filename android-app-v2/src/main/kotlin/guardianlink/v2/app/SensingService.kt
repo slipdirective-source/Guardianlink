@@ -122,7 +122,28 @@ class SensingService : Service() {
         running = true
         setWasRunning(this, true)
         Log.i(TAG, "sensing up (device state, location, motion — each as permitted)")
+        maybeStartWakeWord()
         return START_STICKY
+    }
+
+    /**
+     * Wake-phrase spotting rides the sensing lifecycle: enabled in
+     * Settings, mic granted, offline model present — all three, or
+     * it simply doesn't start (Settings names which is missing).
+     * On a hit, the chat comes up already listening, through the
+     * same door as the assistant-role summon.
+     */
+    private fun maybeStartWakeWord() {
+        if (!WakePrefs.enabled(this)) return
+        if (!hasPermission(Manifest.permission.RECORD_AUDIO)) return
+        if (!WakeWordEngine.modelInstalled(this)) return
+        WakeWordEngine.start(this) {
+            val launch = Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                putExtra(MainActivity.EXTRA_VOICE_SUMMON, true)
+            }
+            startActivity(launch)
+        }
     }
 
     override fun onDestroy() {
@@ -131,6 +152,7 @@ class SensingService : Service() {
     }
 
     private fun stopSensing() {
+        WakeWordEngine.stop()
         deviceStateCollector?.stop()
         deviceStateCollector = null
         locationCollector?.stop()
@@ -257,6 +279,9 @@ class SensingService : Service() {
             }
             if (hasPermission(Manifest.permission.ACTIVITY_RECOGNITION)) {
                 types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH
+            }
+            if (hasPermission(Manifest.permission.RECORD_AUDIO) && WakePrefs.enabled(this) && WakeWordEngine.modelInstalled(this)) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             }
             startForeground(NOTIF_ID, notification, types)
         } else {
