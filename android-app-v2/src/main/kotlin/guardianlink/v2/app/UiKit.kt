@@ -29,11 +29,11 @@ object UiKit {
             cornerRadius = radiusDp * context.resources.displayMetrics.density
         }
 
-    fun card(context: Context, palette: GlPrefs.Palette, radiusDp: Float = 16f): GradientDrawable =
+    fun card(context: Context, palette: GlPrefs.Palette, radiusDp: Float = 26f): GradientDrawable =
         rounded(context, palette.cardBg, radiusDp)
 
     /** A card container: palette surface, rounded, softly elevated. */
-    fun cardView(context: Context, palette: GlPrefs.Palette, radiusDp: Float = 16f): LinearLayout =
+    fun cardView(context: Context, palette: GlPrefs.Palette, radiusDp: Float = 26f): LinearLayout =
         LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             background = card(context, palette, radiusDp)
@@ -57,6 +57,31 @@ object UiKit {
     fun addRipple(view: View, context: Context) {
         view.ripple(context)
     }
+
+    /** Diagonal cosmic gradient — headers and hero surfaces. */
+    fun headerGradient(context: Context, palette: GlPrefs.Palette): GradientDrawable =
+        GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(
+                Color.parseColor("#241060"),
+                Color.parseColor("#4A21B0"),
+                blend(Color.parseColor("#7C5CFF"), palette.userBubble, 0.45f),
+            ),
+        )
+
+    /** The page-depth gradient: deep at the top, breathing room below. */
+    fun pageGradient(context: Context, palette: GlPrefs.Palette): GradientDrawable =
+        GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(palette.pageBg, blend(palette.pageBg, Color.parseColor("#3B1B8F"), 0.28f)),
+        )
+
+    /** A user bubble with nebula drift: accent melting toward pink. */
+    fun userGradient(context: Context, palette: GlPrefs.Palette, radii: FloatArray): GradientDrawable =
+        GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(palette.userBubble, blend(palette.userBubble, Color.parseColor("#FF5CA8"), 0.45f)),
+        ).apply { cornerRadii = radii }
 
     /** Blend two colors: ratio 0 = all a, 1 = all b. */
     fun blend(a: Int, b: Int, ratio: Float): Int {
@@ -134,4 +159,45 @@ object UiKit {
             addView(navItem(context, palette, "🗄", "Vault", active == "vault") { navigate("vault") })
             addView(navItem(context, palette, "⚙", "Settings", active == "settings") { navigate("settings") })
         }
+}
+
+/**
+ * A deterministic starfield: the cosmic backdrop. Stars are
+ * placed from a fixed seed so the sky is the same sky on every
+ * draw (no shimmer, no animation cost) — a few bright, most
+ * faint, a handful tinted with the sovereign's accent. Drawn
+ * behind the chat; the page gradient shows through from the
+ * root's own background.
+ */
+class StarfieldView(context: Context, private val accent: Int, private val dark: Boolean) : View(context) {
+
+    private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+    private val stars: List<FloatArray> = run {
+        val rnd = kotlin.random.Random(20261025)
+        List(120) {
+            floatArrayOf(rnd.nextFloat(), rnd.nextFloat(), rnd.nextFloat(), rnd.nextFloat())
+        }
+    }
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        super.onDraw(canvas)
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w == 0f || h == 0f) return
+        for ((i, s) in stars.withIndex()) {
+            val bright = s[2]
+            paint.color = when {
+                i % 17 == 0 -> accent
+                dark -> Color.WHITE
+                else -> Color.parseColor("#7C5CFF")
+            }
+            paint.alpha = if (dark) {
+                (40 + bright * 170).toInt()
+            } else {
+                (18 + bright * 60).toInt()
+            }
+            val radius = 1f + s[3] * (if (i % 17 == 0) 3.2f else 1.8f)
+            canvas.drawCircle(s[0] * w, s[1] * h, radius, paint)
+        }
+    }
 }
