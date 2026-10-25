@@ -36,7 +36,10 @@ class VaultActivity : AppCompatActivity() {
 
     private enum class Tab(val label: String) {
         ANSWERS("Answers"),
-        LOCATION("Location"),
+        INBOX("Inbox"),
+        HEALTH("Health"),
+        MONEY("Money"),
+        LOCATION("Places"),
         MOTION("Motion"),
         DEVICE("Device"),
         LEDGER("Ledger"),
@@ -145,7 +148,7 @@ class VaultActivity : AppCompatActivity() {
             val selected = t == tab
             tabRow.addView(TextView(this).apply {
                 text = t.label
-                textSize = 13f
+                textSize = 11.5f
                 gravity = Gravity.CENTER
                 setTextColor(if (selected) Color.WHITE else palette.chipText)
                 if (selected) background = UiKit.rounded(this@VaultActivity, palette.userBubble, 999f)
@@ -168,6 +171,15 @@ class VaultActivity : AppCompatActivity() {
         list.removeAllViews()
         when (tab) {
             Tab.ANSWERS -> renderAnswers(palette)
+            Tab.INBOX -> renderEvents(palette, "Nothing in the inbox yet — connect a mailbox in Settings, grant notification access, and mail context lands here.") {
+                it.topic.startsWith("email") || it.topic.startsWith("inbox") || it.topic.startsWith("calendar")
+            }
+            Tab.HEALTH -> renderEvents(palette, "No health readings yet — grant Health Connect access in Settings → Permissions and readings from your watch and phone land here.") {
+                it.topic.startsWith("health")
+            }
+            Tab.MONEY -> renderEvents(palette, "No money movement on record yet — bank and payment alerts arrive through notification access, and receipts through your connected mailbox.") {
+                it.topic.startsWith("finance")
+            }
             Tab.LOCATION -> renderEvents(palette, "No location records yet — start sensing with location granted and fixes will land here.") {
                 it.topic == "location" || it.topic == "location.fix"
             }
