@@ -111,6 +111,18 @@ data class ExecuteResult(
 val LOCAL_ADAPTERS: List<String> =
     listOf("create_standing_question", "set_rail", "export_ledger", "pause_collector", "resume_collector")
 
+/**
+ * Device action types: executed by the platform layer's injected
+ * handler (calls, texts, sending mail — the phone operated as the
+ * sovereign). The core owns the proposal, the policy, the assent,
+ * and the record; the handler owns only the effect. No handler
+ * injected → no adapter → cannot execute, stated plainly.
+ */
+val DEVICE_ACTIONS: List<String> = listOf("phone_call", "send_text", "send_email")
+
+/** What a device handler reports back: the observed outcome, in words. */
+data class DeviceOutcome(val claim: String, val payload: Any? = null)
+
 /** Hard-denied action types: no rail and no assent can authorize these inside the harness. */
 val DENIED_ACTIONS: List<String> =
     listOf("delete_ledger", "disable_audit", "forge_assent", "widen_own_capability")
@@ -131,6 +143,12 @@ class ActionDeps(
      * begin, never silently).
      */
     val zkBridge: ZkProverBridge = UnavailableZkBridge,
+    /**
+     * Platform device-action handler (see [DEVICE_ACTIONS]). Null in
+     * pure-core contexts: device proposals can be drafted there but
+     * never executed, and the refusal says so.
+     */
+    val deviceAction: ((ActionProposal) -> DeviceOutcome)? = null,
 )
 
 /**
@@ -348,7 +366,9 @@ class ActionLayer(private val deps: ActionDeps) {
             deps.audit.record(actor, "execution_blocked_no_assent", mapOf("proposalId" to proposalId))
             return ExecuteResult(executed = false, message = "Blocked: this action requires fresh sovereign assent and none is recorded for this proposal.")
         }
-        if (!LOCAL_ADAPTERS.contains(p.actionType)) {
+        val hasAdapter = LOCAL_ADAPTERS.contains(p.actionType) ||
+            (DEVICE_ACTIONS.contains(p.actionType) && deps.deviceAction != null)
+        if (!hasAdapter) {
             p.status = ProposalStatus.REFUSED
             deps.audit.record(actor, "execution_refused_no_adapter", mapOf("proposalId" to proposalId, "actionType" to p.actionType))
             return ExecuteResult(
@@ -374,7 +394,15 @@ class ActionLayer(private val deps: ActionDeps) {
         var payload: Any? = null
         var outcomeClaim = p.expectedEffect
         try {
-            payload = runAdapter(p)
+            val result = runAdapter(p)
+            if (result is DeviceOutcome) {
+                // A device handler reports what it observed; that
+                // report IS the outcome claim, not the expectation.
+                outcomeClaim = result.claim
+                payload = result.payload
+            } else {
+                payload = result
+            }
         } catch (err: Exception) {
             outcomeStatus = OutcomeStatus.OBSERVED_FAILURE
             outcomeClaim = "Execution failed — ${err.message}"
@@ -438,6 +466,11 @@ class ActionLayer(private val deps: ActionDeps) {
                 mapOf("collector" to p.target, "status" to "active")
             }
             "export_ledger" -> deps.exportLedger()
+            "phone_call", "send_text", "send_email" -> {
+                val handler = deps.deviceAction
+                    ?: throw IllegalStateException("no device-action handler is attached in this build")
+                handler(p)
+            }
             else -> throw IllegalStateException("no adapter for ${p.actionType}")
         }
     }
