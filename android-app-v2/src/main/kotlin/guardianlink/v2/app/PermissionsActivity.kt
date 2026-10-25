@@ -309,6 +309,28 @@ class PermissionsActivity : AppCompatActivity() {
             action = if (healthGranted) null else ({ requestHealthPermissions() }),
         )
 
+        // -- Device control (accessibility, special grant) -------------
+        val a11yGranted = try {
+            val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
+            enabled.split(':').any { it.startsWith(packageName) }
+        } catch (e: Exception) {
+            false
+        }
+        out += Row(
+            title = "Device control (fingers)",
+            why = "The accessibility grant that lets GuardianLink act inside other apps when you command it: open apps, tap, type, scroll, go back — each act proposed first, executed only on your assent, its outcome recorded. The service does nothing on its own.",
+            granted = a11yGranted,
+            statusText = if (a11yGranted) "On — commanded actions can reach inside other apps." else "Off — GuardianLink can sense and message, but has no fingers.",
+            actionLabel = if (a11yGranted) null else "Open Settings",
+            action = if (a11yGranted) null else ({
+                try {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                } catch (e: Exception) {
+                    openAppDetails()
+                }
+            }),
+        )
+
         // -- Notification access (special grant) -----------------------
         val notifAccess = androidx.core.app.NotificationManagerCompat
             .getEnabledListenerPackages(this).contains(packageName)
