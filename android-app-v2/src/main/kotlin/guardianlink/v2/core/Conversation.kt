@@ -106,7 +106,7 @@ class Conversation(private val deps: ConversationDeps) {
 
         // --- assent / refusal for a pending proposal ---
         val pending = pendingProposal()
-        if (Regex("^(yes|yeah|approve|approved|go ahead|do it)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
+        if (Regex("^(yes|yeah|approve|approved|go ahead|do it|execute(?: the order)?|run it|send it|make it happen|proceed)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
             if (pending == null) {
                 return clarify(Intent.CLARIFY, "Nothing is awaiting your assent right now.", before, "What should I do?")
             }
@@ -390,7 +390,8 @@ class Conversation(private val deps: ConversationDeps) {
 
         // --- ask ---
         if (text.contains('?') ||
-            Regex("^(what|where|how|who|when|why|is|are|do|does|can)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
+            Regex("^(what|where|how|who|when|why|is|are|do|does|can)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
+            lower.startsWith("tell me ")
         ) {
             val cluster: String? =
                 if (Regex("where am i\\b").containsMatchIn(lower)) {
@@ -517,7 +518,7 @@ class Conversation(private val deps: ConversationDeps) {
         // A request becomes a proposal; policy, assent, and the
         // record apply exactly as for any governed action. The
         // platform handler executes only after assent (or a rail).
-        val callMatch = Regex("^(?:call|phone|dial)\\s+(.+?)\\s*\\.?$", RegexOption.IGNORE_CASE).find(text)
+        val callMatch = Regex("^(?:now\\s+|ok\\s+|okay\\s+)?(?:call|phone|dial)\\s+(.+?)\\s*\\.?$", RegexOption.IGNORE_CASE).find(text)
         if (callMatch != null && !lower.contains("collector")) {
             val who = callMatch.groupValues[1].trim()
             val proposal = deps.actions.propose(
@@ -534,13 +535,16 @@ class Conversation(private val deps: ConversationDeps) {
             )
             return finishProposal(proposal, before, "Action proposed: call $who.")
         }
-        val textMatch = Regex("^(?:so\\s+)?(?:i want you to\\s+|please\\s+)?send\\s+(.+?)\\s+a\\s+(?:message|text|sms)\\s+(?:saying|telling\\s+(?:her|him|them)(?:\\s+that)?)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
-            ?: Regex("^(?:please\\s+)?send (?:a )?(?:text|message|sms) to\\s+(.+?)\\s+(?:saying|that says|telling\\s+(?:her|him|them)(?:\\s+that)?)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+        val textMatch = Regex("^(?:now\\s+|ok\\s+|okay\\s+)?(?:so\\s+)?(?:i want you to\\s+|please\\s+)?send\\s+(.+?)\\s+a\\s+(?:message|text|sms)\\s+(?:saying|telling\\s+(?:her|him|them)(?:\\s+that)?)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+            ?: Regex("^(?:now\\s+|ok\\s+|okay\\s+)?(?:please\\s+)?send (?:a )?(?:text|message|sms) to\\s+(.+?)\\s+(?:saying|that says|telling\\s+(?:her|him|them)(?:\\s+that)?)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
             ?: Regex("^text\\s+(.+?)\\s+(?:saying|that says)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
             ?: Regex("^message\\s+(.+?)\\s+(?:saying|that)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
             ?: Regex("^text\\s+(.+?)\\s*[:—]\\s*(.+)$", RegexOption.IGNORE_CASE).find(text)
         if (textMatch != null) {
+            // "Shannon in my contacts" is Shannon; the qualifier is
+            // routing information, not part of the name.
             val who = textMatch.groupValues[1].trim()
+                .replace(Regex("\\s+(in|from) my contacts$", RegexOption.IGNORE_CASE), "")
             val body = textMatch.groupValues[2].trim()
             val proposal = deps.actions.propose(
                 ProposalInput(
@@ -561,9 +565,10 @@ class Conversation(private val deps: ConversationDeps) {
         // when the second is a capitalized name-part and not a
         // pronoun/verb ("tell Shannon I love her" vs "tell Mary
         // Jane I'll call"). "tell me…" never lands here.
-        val tellRest = Regex("^tell\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)?.groupValues?.get(1)?.trim()
+        val tellRest = Regex("^(?:now\\s+|ok\\s+|okay\\s+)?tell\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)?.groupValues?.get(1)?.trim()
         if (tellRest != null && !lower.startsWith("tell me")) {
-            val words = tellRest.split(Regex("\\s+"))
+            val words = tellRest.replace(Regex("\\b(in|from) my contacts\\b", RegexOption.IGNORE_CASE), " ")
+                .split(Regex("\\s+")).filter { it.isNotEmpty() }
             val nonNameWords = setOf("i", "you", "we", "he", "she", "they", "it", "the", "a", "that", "to", "about", "whether", "if", "why", "when", "how")
             if (words.size >= 2 && words[1].lowercase() !in setOf("about", "whether", "if", "why", "when", "how")) {
                 val twoWordName = words.size >= 3 && words[1][0].isUpperCase() && words[1].lowercase() !in nonNameWords
@@ -743,7 +748,7 @@ class Conversation(private val deps: ConversationDeps) {
         // — with the forms that DO work. It never silently becomes
         // a record.
         val commandShaped =
-            Regex("^(send|call|text|email|message|dial|phone|open|remind|book|order|pay|schedule)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
+            Regex("^(?:now\\s+|ok\\s+|okay\\s+)?(send|call|text|email|message|dial|phone|open|remind|book|order|pay|schedule|execute)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
                 Regex("\\b(i want you to|please|can you|could you|will you)\\s+(send|call|text|email|message|tell|open|remind|book|order|pay|schedule)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
                 Regex("\\bi want\\b.*\\b(send|call|text|email|message|open|connect|check|track|book|order|pay|schedule|set up)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
                 Regex("^let'?s\\b.*\\b(send|call|text|email|message|open|connect|check|track|book|order|pay|schedule|set up)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
