@@ -91,21 +91,14 @@ class MainActivity : AppCompatActivity() {
             addView(title)
             addView(postureLine)
         }
-        val gear = Button(this).apply {
-            text = "⚙"
-            textSize = 19f
-            setTextColor(palette.headerText)
-            background = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
-            setOnClickListener { openSettings() }
-        }
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(palette.headerBg)
-            setPadding(dp(16), dp(14), dp(8), dp(14))
+            elevation = dp(4).toFloat()
+            setPadding(dp(16), dp(14), dp(16), dp(14))
             addView(badge)
             addView(titleColumn)
-            addView(gear)
         }
 
         nowCard = LinearLayout(this).apply {
@@ -122,10 +115,11 @@ class MainActivity : AppCompatActivity() {
         // input off the screen.
         val nowScroll = ScrollView(this).apply {
             background = rounded(palette.cardBg, 18f)
+            elevation = dp(3).toFloat()
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(168),
-            ).apply { setMargins(24, 8, 24, 8) }
+            ).apply { setMargins(24, 12, 24, 4) }
             addView(nowCard)
         }
 
@@ -152,28 +146,52 @@ class MainActivity : AppCompatActivity() {
             addBubble("Sensing stop requested.", fromUser = false)
         })
         chips.addView(chip("Pause location (governed)") { tryEngineAction() })
-        chips.addView(chip("Data vault") { openVault() })
         val chipRow = HorizontalScrollView(this).apply { addView(chips) }
 
         input = EditText(this).apply {
             hint = "Message GuardianLink…"
+            background = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
+            setPadding(dp(16), dp(10), dp(8), dp(10))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
         val mic = Button(this).apply {
             text = "🎤"
             isAllCaps = false
+            background = UiKit.rounded(this@MainActivity, UiKit.blend(palette.cardBg, palette.userBubble, 0.15f), 999f)
+            layoutParams = LinearLayout.LayoutParams(dp(46), dp(46)).apply { setMargins(dp(4), 0, dp(4), 0) }
             setOnClickListener { startVoiceCommand() }
         }
         val send = Button(this).apply {
             text = "Send"
+            isAllCaps = false
+            setTextColor(Color.WHITE)
+            background = UiKit.rounded(this@MainActivity, palette.userBubble, 999f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(46),
+            )
             setOnClickListener { submitConversation() }
         }
         val inputRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(20, 6, 20, 16)
+            gravity = Gravity.CENTER_VERTICAL
+            background = UiKit.rounded(this@MainActivity, palette.cardBg, 999f)
+            elevation = dp(4).toFloat()
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { setMargins(dp(14), dp(6), dp(14), dp(10)) }
             addView(input)
             addView(mic)
             addView(send)
+        }
+
+        val nav = UiKit.bottomNav(this, palette, "chat") { target ->
+            when (target) {
+                "vault" -> openVault()
+                "settings" -> openSettings()
+            }
         }
 
         setContentView(LinearLayout(this).apply {
@@ -184,6 +202,7 @@ class MainActivity : AppCompatActivity() {
             addView(chatScroll)
             addView(chipRow)
             addView(inputRow)
+            addView(nav)
         })
 
         if (!seeded) {
@@ -322,7 +341,7 @@ class MainActivity : AppCompatActivity() {
             addBubble(
                 "Still off: ${denied.joinToString(", ") { it.substringAfterLast('.') }}. " +
                     "Anything that needs those stays named as unavailable — nothing is faked for them. " +
-                    "You can revisit them any time under Settings → Permissions (the ⚙ above).",
+                    "You can revisit them any time under Settings → Permissions (Settings tab, below).",
                 fromUser = false,
             )
         }
@@ -377,13 +396,30 @@ class MainActivity : AppCompatActivity() {
         val bubble = TextView(this).apply {
             this.text = text
             textSize = GlPrefs.bubbleTextSp(this@MainActivity)
-            setPadding(28, 20, 28, 20)
+            setPadding(dp(16), dp(11), dp(16), dp(11))
+            // Tailed bubbles: three generous corners and one small
+            // one at the sender's side — the shape every chat app
+            // uses, instead of identical log rectangles.
+            val r = 18f * resources.displayMetrics.density
+            val tail = 5f * resources.displayMetrics.density
+            val radii = if (fromUser) {
+                floatArrayOf(r, r, r, r, tail, tail, r, r)
+            } else {
+                floatArrayOf(r, r, r, r, r, r, tail, tail)
+            }
             if (fromUser) {
                 setTextColor(Color.WHITE)
-                background = rounded(palette.userBubble, 28f)
+                background = GradientDrawable().apply {
+                    setColor(palette.userBubble)
+                    cornerRadii = radii
+                }
             } else {
                 setTextColor(palette.appBubbleText)
-                background = rounded(palette.appBubble, 28f)
+                elevation = dp(2).toFloat()
+                background = GradientDrawable().apply {
+                    setColor(palette.cardBg)
+                    cornerRadii = radii
+                }
             }
         }
         val params = LinearLayout.LayoutParams(
@@ -425,16 +461,22 @@ class MainActivity : AppCompatActivity() {
         })
         for (q in answers) {
             nowCard.addView(TextView(this).apply {
-                text = q.text
-                textSize = 13f
+                text = q.text.uppercase()
+                textSize = 11.5f
                 setTextColor(palette.textSecondary)
-                setPadding(0, 12, 0, 0)
+                setPadding(0, 16, 0, 2)
             })
             nowCard.addView(TextView(this).apply {
-                text = "${q.current.text}  ·  ${plainDelta(q.current.delta)}"
-                textSize = 14f
+                text = q.current.text
+                textSize = 14.5f
                 setTextColor(palette.textPrimary)
             })
+            val badgeRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 6, 0, 0)
+                addView(UiKit.deltaPill(this@MainActivity, palette, q.current.delta))
+            }
+            nowCard.addView(badgeRow)
         }
     }
 
@@ -562,11 +604,16 @@ class MainActivity : AppCompatActivity() {
         return Button(this).apply {
             text = label
             isAllCaps = false
-            setTextColor(palette.chipText)
-            background = rounded(palette.chipBg, 20f)
+            textSize = 13f
+            setTextColor(palette.userBubble)
+            background = GradientDrawable().apply {
+                setColor(palette.cardBg)
+                cornerRadius = 999f
+                setStroke(dp(1), palette.userBubble)
+            }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(38),
             ).apply { setMargins(dp(4), dp(2), dp(4), dp(2)) }
             setOnClickListener { action() }
         }
