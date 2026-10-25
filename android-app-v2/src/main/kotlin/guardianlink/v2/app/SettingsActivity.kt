@@ -51,7 +51,7 @@ class SettingsActivity : AppCompatActivity() {
         // Build stamp: which build is actually running, readable at
         // a glance — install confusion costs more than the line.
         root.addView(TextView(this).apply {
-            text = "Build: 2026-10-25 · cosmic + LLM + wake + SMS fix + brain"
+            text = "Build: 2026-10-25 · brain + framing + clean surfaces + trips"
             textSize = 12f
             setTextColor(GlPrefs.palette(this@SettingsActivity).textSecondary)
             setPadding(0, 0, 0, dp(10))
@@ -648,11 +648,19 @@ class SettingsActivity : AppCompatActivity() {
         val enabled = WakePrefs.enabled(this)
         val modelReady = WakeWordEngine.modelInstalled(this)
         card.addView(bodyLine("Say \"$phrase\" and GuardianLink opens listening — the phrase is spotted on this phone (Vosk, offline); no audio leaves the device and nothing is recorded before the phrase. You can change the phrase to any handle you like.", palette))
+        val micGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.RECORD_AUDIO,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         card.addView(bodyLine(
             when {
                 !enabled -> "Off."
-                !modelReady -> "On, but the offline voice model (~40 MB) isn't downloaded yet."
-                else -> "On — listening for \"$phrase\" while sensing runs."
+                !modelReady -> "On, but the offline voice model (~40 MB) isn't downloaded yet — tap Get model."
+                !micGranted -> "On, but the microphone grant is missing — it's under Settings → Permissions."
+                WakeWordEngine.lastError != null && SensingService.isRunning ->
+                    "On, but the ear failed to start: ${WakeWordEngine.lastError}. Toggle it off and on to retry."
+                WakeWordEngine.isRunning -> "On — listening now for \"$phrase\"."
+                !SensingService.isRunning -> "On — the ear starts when sensing starts. Tap Start sensing on the chat screen."
+                else -> "On — sensing is running but the ear hasn't started. Toggle it off and on."
             },
             palette,
         ))
@@ -669,6 +677,11 @@ class SettingsActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(6), 0) }
             setOnClickListener {
                 WakePrefs.setEnabled(this@SettingsActivity, !enabled)
+                if (SensingService.isRunning) {
+                    startService(SensingService.refreshIntent(this@SettingsActivity))
+                }
+                // Give the engine a beat to start/fail, then show the live truth.
+                android.os.Handler(mainLooper).postDelayed({ build() }, 600)
                 build()
             }
         })
@@ -696,6 +709,9 @@ class SettingsActivity : AppCompatActivity() {
                                 if (ok) "Voice model ready." else "Download failed — check the connection and try again.",
                                 Toast.LENGTH_LONG,
                             ).show()
+                            if (ok && SensingService.isRunning) {
+                                startService(SensingService.refreshIntent(this@SettingsActivity))
+                            }
                             build()
                         }
                     }
@@ -725,6 +741,9 @@ class SettingsActivity : AppCompatActivity() {
                 val phrase = input.text.toString().trim()
                 if (phrase.split(Regex("\\s+")).filter { it.isNotEmpty() }.size >= 2) {
                     WakePrefs.setPhrase(this, phrase)
+                    if (SensingService.isRunning) {
+                        startService(SensingService.refreshIntent(this))
+                    }
                     build()
                 } else {
                     Toast.makeText(this, "Use at least two words — short phrases false-trigger.", Toast.LENGTH_LONG).show()
