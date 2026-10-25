@@ -13,12 +13,12 @@ import guardianlink.v2.core.Delta
  * The metrics checkup, delivered the way the sovereign reads his own
  * checkups: a notification of bullet points.
  *
- * Each standing answer becomes one line — question, current answer,
- * and how settled it is, in plain words. Posted while sensing runs
+ * Each standing answer becomes one composed line of plain prose —
+ * no question labels, no scaffolding. Posted while sensing runs
  * whenever the answers actually change (throttled, so a busy phone
  * doesn't buzz itself to death), and on demand from Settings. The
- * notification is a rendering of the same standing answers the Now
- * card shows — never a second, divergent account.
+ * notification renders the same standing answers the vault holds —
+ * never a second, divergent account.
  */
 object MetricsNotifier {
 
@@ -40,12 +40,19 @@ object MetricsNotifier {
      * everything is tracked, but only what bears on the present is
      * surfaced. An answer that doesn't apply right now stays in the
      * record (and in the vault) without taking notification space.
+     *
+     * The lines are the composed answers ONLY — no question labels,
+     * no delta jargon (his correction, 2026-10-25: the questions are
+     * the machine's reasoning, not a billboard; a reader knows what
+     * a line about where they are is). Truncation tells its own
+     * story on a lock screen; the app and the vault carry the full
+     * text.
      */
     fun lines(app: GuardianLinkV2App): List<String> {
         val answers = synchronized(app.coreLock) { app.core.snapshot() }
         return answers
             .filter { q -> q.current.delta != Delta.INAPPLICABLE }
-            .map { q -> "• ${q.text} — ${q.current.text} (${plainDelta(q.current.delta)})" }
+            .map { q -> "• ${q.current.text}" }
     }
 
     fun post(context: Context, app: GuardianLinkV2App) {
@@ -78,10 +85,4 @@ object MetricsNotifier {
         }
     }
 
-    private fun plainDelta(delta: Delta): String = when (delta) {
-        Delta.DISTINGUISHED -> "settled"
-        Delta.EQUIVALENT -> "confirmed"
-        Delta.UNKNOWN -> "not settled yet"
-        Delta.INAPPLICABLE -> "doesn't apply"
-    }
 }
