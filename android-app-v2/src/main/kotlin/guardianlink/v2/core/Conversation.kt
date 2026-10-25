@@ -801,11 +801,36 @@ class Conversation(private val deps: ConversationDeps) {
             return base(Intent.ACT, "$lead I can't run that — ${proposal.policyReason} Nothing was executed.", before)
                 .copy(proposal = proposal)
         }
+        // Device actions get a review prompt, not boilerplate: the
+        // sovereign sees exactly what will happen — recipient and
+        // content — and one word fires it. (His smoothness rule,
+        // 2026-10-25: "fires, with only a send prompt with a review
+        // of what is being sent.")
+        if (DEVICE_ACTIONS.contains(proposal.actionType)) {
+            return base(Intent.ACT, reviewPrompt(proposal), before).copy(proposal = proposal)
+        }
         return base(
             Intent.ACT,
             "$lead This one needs your say-so first — ${proposal.policyReason} Say \"yes\" and I'll run it; ignore it and nothing happens.",
             before,
         ).copy(proposal = proposal)
+    }
+
+    /** The one-prompt review for a device action: what, to whom, exact content. */
+    private fun reviewPrompt(p: ActionProposal): String {
+        val params = p.parameters
+        val close = "Say yes and it fires — or no, and it's dropped."
+        return when (p.actionType) {
+            "send_text" -> "Send this text?\nTo: ${params["to"] ?: p.target}\n\"${params["body"] ?: ""}\"\n$close"
+            "send_email" -> "Send this email?\nTo: ${params["to"] ?: p.target}\nSubject: ${params["subject"] ?: ""}\n\"${params["body"] ?: ""}\"\n$close"
+            "phone_call" -> "Call ${params["to"] ?: p.target}?\n$close"
+            "device_open_app" -> "Open ${params["app"] ?: p.target}?\n$close"
+            "device_tap" -> "Tap \"${params["text"] ?: p.target}\" on the current screen?\n$close"
+            "device_type" -> "Type this into the current field?\n\"${params["text"] ?: ""}\"\n$close"
+            "device_press" -> "Press ${params["key"] ?: p.target}?\n$close"
+            "read_screen" -> "Read the current screen and report what's on it?\n$close"
+            else -> "${p.expectedEffect}\n$close"
+        }
     }
 
     private fun searchReply(about: String, intent: Intent, before: Map<String, Int>): ConversationResult {
