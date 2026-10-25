@@ -35,9 +35,19 @@ object CollectorAvailability {
             has(app, Manifest.permission.ACCESS_COARSE_LOCATION)
         val motionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
             has(app, Manifest.permission.ACTIVITY_RECOGNITION)
+        val notificationsGranted = androidx.core.app.NotificationManagerCompat
+            .getEnabledListenerPackages(app).contains(app.packageName)
+        val calendarGranted = has(app, Manifest.permission.READ_CALENDAR)
+        val emailConfigured = EmailAccountStore(app).load() != null
         synchronized(app.coreLock) {
             reconcile(app, "location", locationGranted, "location permission not granted")
             reconcile(app, "motion", motionGranted, "activity recognition permission not granted")
+            reconcile(app, "notifications", notificationsGranted, "notification access not granted")
+            reconcile(app, "calendar", calendarGranted, "calendar permission not granted")
+            reconcile(app, "email", emailConfigured, "No mailbox connected — add one in Settings → Connected email")
+            // Finances ride the same notification grant (bank and
+            // payment alerts) — same availability fact, own collector.
+            reconcile(app, "finances", notificationsGranted, "notification access not granted")
         }
     }
 
