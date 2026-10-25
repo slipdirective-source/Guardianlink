@@ -114,13 +114,13 @@ class Conversation(private val deps: ConversationDeps) {
             val exec = deps.actions.execute(pending.id)
             var reply =
                 if (exec.executed) {
-                    "Assent recorded. Executed: ${pending.actionType} on ${pending.target}. ${exec.message}"
+                    "Done — ${exec.message}"
                 } else {
-                    "Assent recorded, but execution did not complete: ${exec.message}"
+                    "Your assent is recorded, but it didn't complete: ${exec.message}"
                 }
             if (Regex("\\balways\\b").containsMatchIn(lower) && exec.executed) {
                 deps.actions.addRail(pending.actionType, pending.target, emptyMap(), "sovereign")
-                reply += " A rail now covers ${pending.actionType} on ${pending.target} without fresh assent."
+                reply += " And from now on, that runs under a standing rail — I won't ask again unless something drifts."
             }
             return base(Intent.ACT, reply, before).copy(proposal = pending, execution = exec)
         }
@@ -216,11 +216,11 @@ class Conversation(private val deps: ConversationDeps) {
             )
             val reply =
                 if (isCorrection) {
-                    "Correction bound to \"${target.claim}\" and superseding it: \"$text\". Both stay in the ledger."
+                    "Correction recorded — it replaces \"${target.claim}\". Both versions stay on record."
                 } else if (relationType == RelationType.CONFLICTS) {
-                    "That contradicts your earlier statement \"${target.claim}\". Both are live and the conflict is now surfaced — it will not be silently resolved."
+                    "That contradicts your earlier statement \"${target.claim}\". Both stay live and the conflict is on the table — it won't be quietly resolved."
                 } else {
-                    "Bound to \"${target.claim}\": \"$text\"."
+                    "Noted against \"${target.claim}\": \"$text\"."
                 }
             return base(if (isCorrection) Intent.CORRECT else Intent.REPORT, reply, before)
                 .copy(admittedEventIds = listOf(ev.id))
@@ -231,20 +231,78 @@ class Conversation(private val deps: ConversationDeps) {
             val since = parseSince(lower)
             val events = deps.ledger.allEvents().filter { e -> e.assertedAt >= since }
             val snaps = deps.questions.all().flatMap { q ->
-                q.history.filter { s -> s.evaluatedAt >= since }.map { s -> "${q.id} v${s.version}: ${s.changeNote}" }
+                q.history.filter { s -> s.evaluatedAt >= since }.map { s -> "${q.text} ${s.changeNote}" }
             }
-            val lines = events.map { e -> "#${e.seq} [${e.kind.wire}] ${e.claim} (${e.source})" }
+            val lines = events.map { e -> "• ${e.claim}" }
             val reply =
                 "Since $since:\n" +
-                    (if (lines.isNotEmpty()) lines.joinToString("\n") else "No new evidence admitted.") +
+                    (if (lines.isNotEmpty()) lines.joinToString("\n") else "Nothing new has come in.") +
                     (if (snaps.isNotEmpty()) "\nAnswer changes:\n${snaps.joinToString("\n")}" else "\nNo standing answers changed.")
             return base(Intent.QUERY, reply, before)
+        }
+
+        // --- self-report: what is being tracked ---
+        // The sovereign asking what the system tracks is owed an
+        // answer from the system's own books — the collector registry
+        // (what CAN gather, and its state) and the ledger (what HAS
+        // been gathered) — never a shrug or a search miss. This branch
+        // sits before the generic ask path on purpose: the ask path
+        // would otherwise throw the question at the evidence search
+        // and report nothing matching.
+        if (Regex("\\bwhat\\b[^?]*\\b(track|collect|monitor|watch|record|gather|sens)(ing|ion|e|s)?\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
+            Regex("\\bwhat data\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
+            Regex("\\b(list|show|tell me)\\b[^?]*\\bcollectors\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
+        ) {
+            val collectors = deps.collectors.all()
+            val live = deps.ledger.liveEvents()
+            fun family(topic: String): String = when {
+                topic.startsWith("location") -> "location"
+                topic == "state.motion" -> "motion"
+                topic.startsWith("state.") -> "device state"
+                else -> "other records"
+            }
+            val counts = live.groupingBy { family(it.topic) }.eachCount()
+            val latestPlace = live.filter { it.topic == "location" }.maxByOrNull { it.seq }?.claim
+            val sb = StringBuilder("What I'm tracking — the collectors registered on this device:\n")
+            for (c in collectors) {
+                val state = when (c.status) {
+                    CollectorStatus.ACTIVE -> "active"
+                    CollectorStatus.PAUSED -> "paused" + (c.statusReason?.let { " — $it" } ?: "")
+                    CollectorStatus.DENIED -> "off" + (c.statusReason?.let { " — $it" } ?: "")
+                }
+                sb.append("• ${c.name} — ${c.purpose} [$state]\n")
+            }
+            if (live.isEmpty()) {
+                sb.append("On record: nothing yet — no evidence has been admitted.\n")
+            } else {
+                val parts = counts.entries.joinToString(", ") { "${it.value} ${it.key}" }
+                sb.append("On record: ${live.size} events — $parts.\n")
+                latestPlace?.let { sb.append("Latest position: $it\n") }
+            }
+            sb.append("Every reading is readable in the Data vault, tabbed by kind. To stop one, say \"pause location\" — it goes through the same assent ceremony as any governed action.")
+            return base(Intent.QUERY, sb.toString(), before)
         }
 
         // --- create a standing question (governed act) ---
         val trackMatch = Regex("\\b(?:keep track of|track|watch)\\s+(.+?)\\.?$", RegexOption.IGNORE_CASE).find(text)
         if (trackMatch != null && Regex("\\b(whether|if|of)\\b", RegexOption.IGNORE_CASE).containsMatchIn(trackMatch.groupValues[1])) {
             val questionText = trackMatch.groupValues[1].replace(Regex("^whether\\s+", RegexOption.IGNORE_CASE), "").trim()
+            // A fragment is not a question. "keep track of?" parses to
+            // the word "of" — proposing a standing question out of it
+            // would manufacture a nonsense commitment and then hold
+            // the sovereign's "yes" hostage to it. Clarify instead.
+            val contentWords = questionText.lowercase()
+                .replace(Regex("[^a-z ]"), " ")
+                .split(Regex("\\s+"))
+                .filter { w -> w.length > 2 && w !in setOf("the", "and", "for", "whether", "what", "that", "this") }
+            if (questionText.length < 8 || contentWords.isEmpty()) {
+                return clarify(
+                    Intent.CLARIFY,
+                    "That came through as a fragment — I can't tell what you'd want tracked.",
+                    before,
+                    "What should I keep track of? Say it in a few words — like \"whether the cabinet job is paid\".",
+                )
+            }
             val proposal = deps.actions.propose(
                 ProposalInput(
                     actionType = "create_standing_question",
@@ -302,11 +360,13 @@ class Conversation(private val deps: ConversationDeps) {
                 }
             if (cluster != null) {
                 val q = deps.questions.get(cluster)!!
-                return base(
-                    Intent.ASK,
-                    "${q.text}\n${q.current.text}\n(uncertainty: ${q.current.delta.wire}; basis: ${q.current.basis.wire}; v${q.current.version})",
-                    before,
-                )
+                // The answer is the reply — composed prose, no
+                // machinery suffix. Settled-ness is woven in only
+                // when it adds something the prose doesn't already
+                // say: independent confirmation is worth naming.
+                val confirmation =
+                    if (q.current.delta == Delta.EQUIVALENT) "\nThat's confirmed by more than one source." else ""
+                return base(Intent.ASK, q.current.text + confirmation, before)
             }
             val aboutMatch = Regex("about\\s+(.+?)\\??$").find(lower)
             if (aboutMatch != null) return searchReply(aboutMatch.groupValues[1], Intent.ASK, before)
@@ -455,7 +515,7 @@ class Conversation(private val deps: ConversationDeps) {
                 }
             return base(
                 Intent.REPORT,
-                "Recorded under $topic: \"${ev.claim}\". Standing answers updated.$conflictNote",
+                "Recorded: \"${ev.claim}\" — your standing answers are updated.$conflictNote",
                 before,
             ).copy(admittedEventIds = listOf(ev.id))
         }
@@ -481,19 +541,19 @@ class Conversation(private val deps: ConversationDeps) {
     private fun finishProposal(proposal: ActionProposal, before: Map<String, Int>, lead: String): ConversationResult {
         if (proposal.policy == PolicyOutcome.EXECUTABLE_UNDER_RAIL) {
             val exec = deps.actions.execute(proposal.id)
-            return base(Intent.ACT, "$lead Covered by a rail, so it executed without fresh assent. ${exec.message}", before)
+            return base(Intent.ACT, "$lead One of your standing rails already covers it, so it ran without asking again. ${exec.message}", before)
                 .copy(proposal = proposal, execution = exec)
         }
         if (proposal.policy == PolicyOutcome.DENIED ||
             proposal.policy == PolicyOutcome.DRIFT_FLAGGED ||
             proposal.policy == PolicyOutcome.INSUFFICIENTLY_SPECIFIED
         ) {
-            return base(Intent.ACT, "$lead Policy: ${proposal.policy.wire} — ${proposal.policyReason} Nothing was executed.", before)
+            return base(Intent.ACT, "$lead I can't run that — ${proposal.policyReason} Nothing was executed.", before)
                 .copy(proposal = proposal)
         }
         return base(
             Intent.ACT,
-            "$lead Policy: needs fresh assent — ${proposal.policyReason} Say \"yes\" to assent and execute, or ignore it and nothing happens.",
+            "$lead This one needs your say-so first — ${proposal.policyReason} Say \"yes\" and I'll run it; ignore it and nothing happens.",
             before,
         ).copy(proposal = proposal)
     }
@@ -506,12 +566,12 @@ class Conversation(private val deps: ConversationDeps) {
         if (matches.isEmpty()) {
             return base(
                 intent,
-                "Unknown: I hold no live evidence about \"$about\" yet. (That is an honest unknown, not a gap I will fill by guessing.)",
+                "I don't have anything on record about \"$about\" yet — and I won't guess at it.",
                 before,
             )
         }
-        val lines = matches.map { e -> "#${e.seq} [${e.kind.wire}] ${e.claim} (${e.source})" }
-        return base(intent, "Live evidence about \"$about\":\n${lines.joinToString("\n")}", before)
+        val lines = matches.map { e -> "• ${e.claim}" }
+        return base(intent, "Here's what I have on \"$about\":\n${lines.joinToString("\n")}", before)
     }
 
     private fun parseSince(lower: String): String {
