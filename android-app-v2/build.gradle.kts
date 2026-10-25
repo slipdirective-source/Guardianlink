@@ -40,6 +40,25 @@ android {
         }
     }
 
+    // JavaMail's two jars ship colliding META-INF paperwork; the
+    // license/notice duplicates are excluded, the mailcap registries
+    // (which the MIME machinery actually reads) resolve pick-first.
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/NOTICE.md",
+                "META-INF/LICENSE.md",
+                "META-INF/NOTICE",
+                "META-INF/LICENSE",
+            )
+            pickFirsts += setOf(
+                "META-INF/mailcap",
+                "META-INF/mimetypes.default",
+                "META-INF/default.handlers",
+            )
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
