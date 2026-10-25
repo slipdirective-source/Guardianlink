@@ -115,11 +115,37 @@ class SensingService : Service() {
             synchronized(app.coreLock) {
                 app.core.admitSensor(collector, topic, claim, confidence = confidence)
             }
+            maybePostCheckup(app)
         } catch (refused: IllegalStateException) {
             // The harness boundary refused this evidence (collector
             // paused/denied). Drop the event; never bypass.
             Log.w(TAG, "evidence refused at harness boundary: ${refused.message}")
         }
+    }
+
+    @Volatile
+    private var lastCheckupAtMs: Long = 0L
+
+    @Volatile
+    private var lastCheckupSignature: String = ""
+
+    /**
+     * The metrics checkup as a notification: whenever sensing changes
+     * a standing answer, the sovereign gets the bullet-point summary —
+     * throttled to at most one a minute and only on an actual change,
+     * so the phone reports movement, not noise.
+     */
+    private fun maybePostCheckup(app: GuardianLinkV2App) {
+        val now = System.currentTimeMillis()
+        if (now - lastCheckupAtMs < CHECKUP_MIN_INTERVAL_MS) return
+        val signature = synchronized(app.coreLock) {
+            app.core.snapshot().joinToString("|") { "${it.id}:${it.current.version}" }
+        }
+        if (signature == lastCheckupSignature) return
+        lastCheckupSignature = signature
+        lastCheckupAtMs = now
+        MetricsNotifier.post(this, app)
+        app.persistCore()
     }
 
     /**
@@ -142,6 +168,7 @@ class SensingService : Service() {
                     ),
                 )
             }
+            maybePostCheckup(app)
         } catch (refused: IllegalStateException) {
             Log.w(TAG, "derived evidence refused at harness boundary: ${refused.message}")
         }
@@ -204,6 +231,7 @@ class SensingService : Service() {
         private const val TAG = "GlV2Sensing"
         private const val CHANNEL_ID = "gl-v2-sensing"
         private const val NOTIF_ID = 2
+        private const val CHECKUP_MIN_INTERVAL_MS = 60_000L
         const val ACTION_STOP = "guardianlink.v2.app.action.STOP_SENSING"
 
         private const val PREFS = "gl-v2-sensing"
