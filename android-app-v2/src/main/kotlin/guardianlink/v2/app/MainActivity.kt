@@ -9,6 +9,9 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -156,6 +159,11 @@ class MainActivity : AppCompatActivity() {
             hint = "Message GuardianLink…"
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
+        val mic = Button(this).apply {
+            text = "🎤"
+            isAllCaps = false
+            setOnClickListener { startVoiceCommand() }
+        }
         val send = Button(this).apply {
             text = "Send"
             setOnClickListener { submitConversation() }
@@ -164,6 +172,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(20, 6, 20, 16)
             addView(input)
+            addView(mic)
             addView(send)
         }
 
@@ -185,6 +194,100 @@ class MainActivity : AppCompatActivity() {
         renderSigAtCreate = GlPrefs.renderSignature(this)
         if (GlPrefs.autoSense(this)) {
             startSensing()
+        }
+        handleVoiceSummon(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleVoiceSummon(intent)
+    }
+
+    /**
+     * A system summon (assistant role) lands here: the agent comes up
+     * already listening. If the microphone grant isn't there, the
+     * pathway is named instead of failing silently — a bubble, and
+     * the route to grant it under Settings → Permissions.
+     */
+    private fun handleVoiceSummon(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_VOICE_SUMMON, false) != true) return
+        intent.removeExtra(EXTRA_VOICE_SUMMON)
+        addBubble("You summoned me — I'm listening.", fromUser = false)
+        startVoiceCommand()
+    }
+
+    private var recognizer: SpeechRecognizer? = null
+
+    /**
+     * Voice in, through the platform's speech engine, out through the
+     * exact pipeline typed text takes: the words land in the input
+     * box, submit like a typed message, and anything that needs
+     * assent goes through the same governed ceremony. Voice is a
+     * keyboard here, not a second authority.
+     */
+    private fun startVoiceCommand() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            addBubble(
+                "Voice needs the microphone grant. It's under Settings → Permissions — " +
+                    "turn on Microphone and I'll take spoken questions and commands.",
+                fromUser = false,
+            )
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            addBubble("This phone has no speech recognition engine available, so voice input can't run here.", fromUser = false)
+            return
+        }
+        recognizer?.destroy()
+        val sr = SpeechRecognizer.createSpeechRecognizer(this)
+        recognizer = sr
+        sr.setRecognitionListener(object : RecognitionListener {
+            override fun onResults(results: Bundle?) {
+                val text = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    ?.trim()
+                    .orEmpty()
+                if (text.isNotEmpty()) {
+                    input.setText(text)
+                    submitConversation()
+                } else {
+                    addBubble("I didn't catch that — try again, or type it.", fromUser = false)
+                }
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                val text = partialResults
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                if (!text.isNullOrEmpty()) input.setText(text)
+            }
+
+            override fun onError(error: Int) {
+                if (error != SpeechRecognizer.ERROR_NO_MATCH) {
+                    addBubble("Voice input stopped (engine error $error). Typing still works.", fromUser = false)
+                }
+            }
+
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+        val listenIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Ask GuardianLink, or give a command")
+        }
+        try {
+            sr.startListening(listenIntent)
+            addBubble("Listening…", fromUser = false)
+        } catch (e: Exception) {
+            addBubble("Voice input couldn't start: ${e.message}", fromUser = false)
         }
     }
 
@@ -467,6 +570,17 @@ class MainActivity : AppCompatActivity() {
             ).apply { setMargins(dp(4), dp(2), dp(4), dp(2)) }
             setOnClickListener { action() }
         }
+    }
+
+    companion object {
+        /** Set by the assistant-role session when the system summon opens us. */
+        const val EXTRA_VOICE_SUMMON = "guardianlink.v2.app.extra.VOICE_SUMMON"
+    }
+
+    override fun onDestroy() {
+        recognizer?.destroy()
+        recognizer = null
+        super.onDestroy()
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
