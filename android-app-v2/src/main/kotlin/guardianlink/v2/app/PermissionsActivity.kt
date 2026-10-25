@@ -56,7 +56,7 @@ class PermissionsActivity : AppCompatActivity() {
             text = "Everything GuardianLink can sense is a grant from you. " +
                 "Turn one off and the system names it unavailable — it never guesses around a no."
             textSize = 13f
-            setTextColor(Color.DKGRAY)
+            setTextColor(palette.textSecondary)
             setPadding(0, 8, 0, 16)
         })
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -94,41 +94,48 @@ class PermissionsActivity : AppCompatActivity() {
     )
 
     private fun buildRows() {
+        val palette = GlPrefs.palette(this)
         list.removeAllViews()
         for (row in rows()) {
-            val panel = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(4, 18, 4, 18)
+            val panel = UiKit.cardView(this, palette, 14f)
+            val titleRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                addView(TextView(this@PermissionsActivity).apply {
+                    text = row.title
+                    textSize = 16f
+                    setTextColor(palette.textPrimary)
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                addView(UiKit.grantPill(this@PermissionsActivity, palette, row.granted))
             }
-            panel.addView(TextView(this).apply {
-                text = row.title
-                textSize = 16f
-                setTextColor(Color.parseColor("#14181A"))
-            })
+            panel.addView(titleRow)
             panel.addView(TextView(this).apply {
                 text = row.why
                 textSize = 13f
-                setTextColor(Color.DKGRAY)
+                setTextColor(palette.textSecondary)
+                setPadding(0, UiKit.dp(this@PermissionsActivity, 4), 0, 0)
             })
             panel.addView(TextView(this).apply {
                 text = row.statusText
                 textSize = 13f
-                setTextColor(
-                    if (row.granted) Color.parseColor("#0F5257") else Color.parseColor("#8A6D00"),
-                )
+                setTextColor(palette.textSecondary)
+                setPadding(0, UiKit.dp(this@PermissionsActivity, 4), 0, 0)
             })
             if (row.action != null && row.actionLabel != null) {
                 panel.addView(Button(this).apply {
                     text = row.actionLabel
                     isAllCaps = false
+                    setTextColor(Color.WHITE)
+                    background = UiKit.rounded(this@PermissionsActivity, palette.userBubble, 999f)
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        UiKit.dp(this@PermissionsActivity, 42),
+                    ).apply { setMargins(0, UiKit.dp(this@PermissionsActivity, 10), 0, 0) }
                     setOnClickListener { row.action.invoke() }
                 })
             }
             list.addView(panel)
-            list.addView(LinearLayout(this).apply {
-                setBackgroundColor(Color.parseColor("#E0E4E6"))
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 2)
-            })
         }
     }
 
