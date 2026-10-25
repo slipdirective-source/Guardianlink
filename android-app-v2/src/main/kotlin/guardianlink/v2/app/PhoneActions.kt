@@ -40,6 +40,9 @@ object PhoneActions {
 
     fun handle(context: Context, proposal: ActionProposal): DeviceOutcome {
         val appContext = context.applicationContext
+        if (proposal.actionType.startsWith("device_") || proposal.actionType == "read_screen") {
+            return DeviceControl.handle(appContext, proposal)
+        }
         return when (proposal.actionType) {
             "phone_call" -> call(appContext, proposal.parameters["to"] as? String ?: proposal.target)
             "send_text" -> text(
