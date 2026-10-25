@@ -225,6 +225,7 @@ object StateStore {
         now: V2Clock = V2Clock { java.time.Instant.now() },
         zkBridge: ZkProverBridge = UnavailableZkBridge,
         deviceActionHandler: ((ActionProposal) -> DeviceOutcome)? = null,
+        languagePort: LanguagePort? = null,
     ): GuardianLink? {
         val bytes = try {
             storage.read(name)
@@ -234,7 +235,7 @@ object StateStore {
             throw StateStoreException(StateStoreError.STORAGE_READ_FAILED, "could not read state \"$name\": ${e.message}")
         }
         if (bytes == null) return null
-        return deserialize(String(bytes, Charsets.UTF_8), now, zkBridge, deviceActionHandler)
+        return deserialize(String(bytes, Charsets.UTF_8), now, zkBridge, deviceActionHandler, languagePort)
     }
 
     fun deserialize(
@@ -242,6 +243,7 @@ object StateStore {
         now: V2Clock = V2Clock { java.time.Instant.now() },
         zkBridge: ZkProverBridge = UnavailableZkBridge,
         deviceActionHandler: ((ActionProposal) -> DeviceOutcome)? = null,
+        languagePort: LanguagePort? = null,
     ): GuardianLink {
         val root = JsonParser.parse(text)
         val doc = asObject(root, "state document")
@@ -319,7 +321,7 @@ object StateStore {
         @Suppress("UNCHECKED_CAST")
         val restoredRevocationKeyId = (identityDoc as? Map<String, Any?>)?.get("revocationAuthorityKeyId") as? String
 
-        val gl = GuardianLink(now = now, deviceId = deviceId, zkBridge = zkBridge, deviceActionHandler = deviceActionHandler)
+        val gl = GuardianLink(now = now, deviceId = deviceId, zkBridge = zkBridge, deviceActionHandler = deviceActionHandler, languagePort = languagePort)
         gl.operatorKeyId = restoredOperatorKeyId
         gl.revocationAuthorityKeyId = restoredRevocationKeyId
         try {
