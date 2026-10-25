@@ -92,6 +92,12 @@ dependencies {
     // Email collector: JavaMail's Android port — IMAP over SSL for
     // the connected mailbox (EmailSync). Pinned to the long-stable
     // 1.6.7 line; activation carries the MIME registry it needs.
+    // Wake phrase: Vosk offline recognition with a grammar locked
+    // to the user's handle — any phrase, no retraining, no audio
+    // leaves the device (WakeWordEngine). JNA comes transitively
+    // (also pinned above for the ZK bridge).
+    implementation("com.alphacephei:vosk-android:0.3.47")
+
     implementation("com.sun.mail:android-mail:1.6.7")
     implementation("com.sun.mail:android-activation:1.6.7")
 
