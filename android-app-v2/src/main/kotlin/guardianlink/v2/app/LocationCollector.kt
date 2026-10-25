@@ -148,6 +148,8 @@ class LocationCollector(
     private val context: Context,
     private val sink: (topic: String, claim: String, confidence: Double) -> Unit,
     private val onUnavailable: (reason: String) -> Unit,
+    /** Raw numbers for the trip tracker — the prose path stays the record's face. */
+    private val onFix: ((lat: Double, lon: Double, speedMps: Double?, epochMs: Long, accuracyM: Double?) -> Unit)? = null,
 ) {
     private var locationManager: LocationManager? = null
     private var activeProvider: String? = null
@@ -230,6 +232,13 @@ class LocationCollector(
     }
 
     private fun emit(location: Location, provider: String) {
+        onFix?.invoke(
+            location.latitude,
+            location.longitude,
+            if (location.hasSpeed()) location.speed.toDouble() else null,
+            location.time,
+            if (location.hasAccuracy()) location.accuracy.toDouble() else null,
+        )
         admit(location, provider, lastKnown = false)
     }
 
