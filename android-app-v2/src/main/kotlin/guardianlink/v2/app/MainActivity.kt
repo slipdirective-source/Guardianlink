@@ -40,9 +40,10 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
 
     private lateinit var postureLine: TextView
-    private lateinit var nowCard: LinearLayout
     private lateinit var chatLog: LinearLayout
     private lateinit var chatScroll: ScrollView
+    private lateinit var chipRegion: HorizontalScrollView
+    private var keyboardUp = false
     private lateinit var input: EditText
 
     private val handler = Handler(Looper.getMainLooper())
@@ -52,7 +53,7 @@ class MainActivity : AppCompatActivity() {
 
     private val refreshLoop = object : Runnable {
         override fun run() {
-            renderNow()
+            renderPosture()
             handler.postDelayed(this, REFRESH_MS)
         }
     }
@@ -96,36 +97,14 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             background = UiKit.headerGradient(this@MainActivity, palette)
             elevation = dp(4).toFloat()
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setPadding(dp(16), dp(10), dp(16), dp(10))
             addView(badge)
             addView(titleColumn)
         }
 
-        nowCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(28, 20, 28, 20)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            )
-        }
-        // The Now card lives in its own fixed-height scroll region:
-        // however long the standing answers get, they scroll INSIDE
-        // the card and can never push the chat, the chips, or the
-        // input off the screen.
-        val nowScroll = ScrollView(this).apply {
-            background = rounded(palette.cardBg, 18f)
-            elevation = dp(3).toFloat()
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(168),
-            ).apply { setMargins(24, 12, 24, 4) }
-            addView(nowCard)
-        }
-
         chatLog = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(20, 12, 20, 12)
+            setPadding(16, 10, 16, 10)
         }
         chatScroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
@@ -147,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         })
         chips.addView(chip("Pause location (governed)") { tryEngineAction() })
         val chipRow = HorizontalScrollView(this).apply { addView(chips) }
+        chipRegion = chipRow
 
         input = EditText(this).apply {
             hint = "Message GuardianLink…"
@@ -200,7 +180,6 @@ class MainActivity : AppCompatActivity() {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(header)
-            addView(nowScroll)
             addView(chatScroll)
             addView(chipRow)
             addView(inputRow)
@@ -224,11 +203,22 @@ class MainActivity : AppCompatActivity() {
             )
         })
 
+        content.viewTreeObserver.addOnGlobalLayoutListener {
+            val rect = android.graphics.Rect()
+            content.getWindowVisibleDisplayFrame(rect)
+            val up = content.height - rect.height() > content.height * 0.15 && content.height > 0
+            if (up != keyboardUp) {
+                keyboardUp = up
+                chipRegion.visibility = if (up) View.GONE else View.VISIBLE
+                if (up) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+            }
+        }
+
         if (!seeded) {
             seeded = true
             seedConversation()
         }
-        renderNow()
+        renderPosture()
         renderSigAtCreate = GlPrefs.renderSignature(this)
         if (GlPrefs.autoSense(this)) {
             startSensing()
@@ -365,7 +355,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
         renderedSignature = ""
-        renderNow()
+        renderPosture()
     }
 
     // ------------------------------------------------------------------
@@ -399,7 +389,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 addBubble(result.reply, fromUser = false)
                 renderedSignature = ""
-                renderNow()
+                renderPosture()
             }
         }
     }
@@ -452,47 +442,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ------------------------------------------------------------------
-    // Now card (standing answers, plain language)
+    // Header posture line
     // ------------------------------------------------------------------
 
-    private fun renderNow() {
+    /**
+     * The header's one quiet line: posture only. The standing
+     * answers themselves are NOT rendered here — they are the
+     * machine's reasoning, surfaced inside conversation when
+     * relevant and kept in the Vault for audit (his correction,
+     * 2026-10-25: "not a billboard").
+     */
+    private fun renderPosture() {
         val answers = synchronized(app.coreLock) { app.core.snapshot() }
         val signature = answers.joinToString("|") { "${it.id}:${it.current.version}" } +
             app.engineStatus + app.persistenceStatus + app.engineReady
         if (signature == renderedSignature) return
         renderedSignature = signature
-
         postureLine.text = when {
             app.persistenceError != null -> "Running fresh — saved state failed its checks and was left untouched."
             app.engineReady -> "On. Governed actions ready; sensing follows your permissions."
             else -> "Starting the governed engine… the conversation is already live."
-        }
-
-        val palette = GlPrefs.palette(this)
-        nowCard.removeAllViews()
-        nowCard.addView(TextView(this).apply {
-            text = "NOW"
-            textSize = 12f
-            setTextColor(palette.userBubble)
-        })
-        for (q in answers) {
-            nowCard.addView(TextView(this).apply {
-                text = q.text.uppercase()
-                textSize = 11.5f
-                setTextColor(palette.textSecondary)
-                setPadding(0, 16, 0, 2)
-            })
-            nowCard.addView(TextView(this).apply {
-                text = q.current.text
-                textSize = 14.5f
-                setTextColor(palette.textPrimary)
-            })
-            val badgeRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 6, 0, 0)
-                addView(UiKit.deltaPill(this@MainActivity, palette, q.current.delta))
-            }
-            nowCard.addView(badgeRow)
         }
     }
 
@@ -555,7 +524,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 for (line in lines) addBubble(line, fromUser = false)
                 renderedSignature = ""
-                renderNow()
+                renderPosture()
             }
         }
     }
