@@ -372,12 +372,12 @@ class ActionLayer(private val deps: ActionDeps) {
 
         var outcomeStatus = OutcomeStatus.OBSERVED_SUCCESS
         var payload: Any? = null
-        var outcomeClaim = "Outcome observed: ${p.expectedEffect}"
+        var outcomeClaim = p.expectedEffect
         try {
             payload = runAdapter(p)
         } catch (err: Exception) {
             outcomeStatus = OutcomeStatus.OBSERVED_FAILURE
-            outcomeClaim = "Outcome observed: execution failed — ${err.message}"
+            outcomeClaim = "Execution failed — ${err.message}"
         }
         val outcomeEv = deps.ledger.admit(
             AdmitInput(
