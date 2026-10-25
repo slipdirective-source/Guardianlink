@@ -36,13 +36,34 @@ object BrainStore {
     fun remove(context: Context) {
         modelFile(context).delete()
         partFile(context).delete()
+        attemptMarker(context).delete()
+        BrainPrefs.setTripped(context, false)
     }
+
+    /**
+     * The crash circuit-breaker's marker: written the moment
+     * engine creation begins, deleted the moment it succeeds.
+     * If the file survives a process, creation killed that
+     * process — the brain stays off (see LocalBrainPort).
+     */
+    fun attemptMarker(context: Context): File =
+        File(File(context.filesDir, "brain").apply { mkdirs() }, ".engine-attempt")
 }
 
 /** The sovereign's brain preferences: on-device first, unless they say otherwise. */
 object BrainPrefs {
     private const val PREFS = "gl-brain"
     private const val KEY_PREFER_LOCAL = "prefer_local"
+    private const val KEY_TRIPPED = "brain_tripped"
+
+    fun tripped(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_TRIPPED, false)
+
+    fun setTripped(context: Context, value: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_TRIPPED, value).apply()
+    }
 
     fun preferLocal(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
