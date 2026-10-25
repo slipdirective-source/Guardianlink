@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">GuardianLink device control. When you command it — and only then, under your assent — GuardianLink can read the screen, tap, type, scroll, and move between apps on your behalf. Every act is proposed first and its outcome is recorded. It never acts on its own.</string>
+</resources>
