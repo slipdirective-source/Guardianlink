@@ -37,6 +37,8 @@ class ConversationDeps(
     val actions: ActionLayer,
     val collectors: CollectorRegistry,
     val now: V2Clock,
+    /** The LLM intent reader; null = deterministic floor only. */
+    val languagePort: LanguagePort? = null,
 )
 
 private val NEGATION = Regex(
@@ -741,6 +743,23 @@ class Conversation(private val deps: ConversationDeps) {
             ).copy(proposal = proposal)
         }
 
+        // --- language port: the LLM reads what the forms missed ---
+        // Reached only when every deterministic form missed. The
+        // port's intent is validated against the registry below;
+        // anything off-registry, under-specified, or low-confidence
+        // falls through to the floor's behavior unchanged.
+        val port = deps.languagePort
+        if (port != null) {
+            val intent = try {
+                port.parse(text)
+            } catch (e: Exception) {
+                null
+            }
+            if (intent != null && intent.kind == "act" && intent.confidence >= LANGUAGE_CONFIDENCE_FLOOR && intent.actionType != null) {
+                llmProposal(intent, text, before)?.let { return it }
+            }
+        }
+
         // --- unrecognized command shape: never file a command as a note ---
         // His ruling (2026-10-25, the Shannon message): the agent
         // recorded the request and failed to execute — not because
@@ -812,6 +831,91 @@ class Conversation(private val deps: ConversationDeps) {
             if (p != null && p.status == ProposalStatus.PROPOSED && p.policy == PolicyOutcome.NEEDS_FRESH_ASSENT) return p
         }
         return null
+    }
+
+    /**
+     * Validate a language-port intent against the registry and, if
+     * it holds, turn it into the same governed proposal the
+     * deterministic forms produce. Returns null when the intent
+     * does not validate (off-registry, unknown key, no target) —
+     * the caller then falls through to the floor. A recognized
+     * action missing only its content gets a targeted clarify.
+     * The parse itself is admitted as agent-derived evidence
+     * before the proposal is built: the reading is on the record
+     * whether or not the sovereign assents to the act.
+     */
+    private fun llmProposal(intent: StructuredIntent, utterance: String, before: Map<String, Int>): ConversationResult? {
+        val type = intent.actionType ?: return null
+        if (!DEVICE_ACTIONS.contains(type)) return null
+        val p = intent.params
+        fun param(vararg keys: String): String? =
+            keys.firstNotNullOfOrNull { k -> p[k]?.trim()?.takeIf { it.isNotEmpty() } }
+
+        val spec: Triple<String, Map<String, Any?>, String>? = when (type) {
+            "send_text" -> {
+                val to = param("to", "target", "recipient") ?: return null
+                val body = param("body", "text", "message")
+                    ?: return clarify(Intent.CLARIFY, "I can text $to — saying what?", before, "What should the text say?")
+                Triple(to, mapOf("to" to to, "body" to body), "Send a text to $to: \"$body\"")
+            }
+            "phone_call" -> {
+                val to = param("to", "target", "recipient", "number") ?: return null
+                Triple(to, mapOf("to" to to), "Place a phone call to $to.")
+            }
+            "send_email" -> {
+                val to = param("to", "target", "recipient") ?: return null
+                val body = param("body", "text", "message")
+                    ?: return clarify(Intent.CLARIFY, "I can email $to — saying what?", before, "What should the email say?")
+                val subject = param("subject") ?: ""
+                Triple(to, mapOf("to" to to, "subject" to subject, "body" to body), "Send an email to $to: \"$body\"")
+            }
+            "device_open_app" -> {
+                val app = param("app", "to", "target") ?: return null
+                Triple(app, mapOf("app" to app), "Open $app.")
+            }
+            "device_tap" -> {
+                val what = param("text", "target", "label") ?: return null
+                Triple(what, mapOf("text" to what), "Tap \"$what\" on the current screen.")
+            }
+            "device_type" -> {
+                val typed = param("text", "body") ?: return null
+                Triple("text field", mapOf("text" to typed), "Type \"$typed\" into the current field.")
+            }
+            "device_press" -> {
+                val key = param("key", "target")?.lowercase() ?: return null
+                if (key !in setOf("back", "home", "recents", "notifications")) return null
+                Triple(key, mapOf("key" to key), "Press $key.")
+            }
+            "read_screen" -> Triple("screen", emptyMap(), "Read the current screen and report what's on it.")
+            else -> null
+        }
+        val (target, params, effect) = spec ?: return null
+
+        deps.ledger.admit(
+            AdmitInput(
+                kind = EventKind.AGENT_DERIVED,
+                topic = "language.parse",
+                claim = "Language model read \"$utterance\" as $type on $target (confidence ${"%.2f".format(intent.confidence)}).",
+                source = "language_model",
+                confidence = intent.confidence,
+                agentDerived = true,
+            ),
+        )
+        val reversible = if (type == "read_screen") Reversibility.REVERSIBLE else Reversibility.IRREVERSIBLE
+        val cc = if (type == "read_screen") ConsequenceClass.LOCAL else ConsequenceClass.EXTERNAL
+        val proposal = deps.actions.propose(
+            ProposalInput(
+                actionType = type,
+                target = target,
+                parameters = params,
+                expectedEffect = effect,
+                reversibility = reversible,
+                consequenceClass = cc,
+                requiredAuthority = RequiredAuthority.FRESH_ASSENT,
+                requestedBy = "sovereign",
+            ),
+        )
+        return finishProposal(proposal, before, "Understood: $effect")
     }
 
     private fun finishProposal(proposal: ActionProposal, before: Map<String, Int>, lead: String): ConversationResult {
