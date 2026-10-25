@@ -91,6 +91,35 @@ class DeviceActionTest {
     }
 
     @Test
+    fun `natural send-a-message phrasing parses to a text proposal`() {
+        var seen: ActionProposal? = null
+        val h = harnessWith { p ->
+            seen = p
+            DeviceOutcome("Text sent.")
+        }
+        val r = h.say("so I want you to send Shannon a message telling her I love her")
+        assertEquals(Intent.ACT, r.intent, "a command, not a note: ${r.reply}")
+        val yes = h.say("yes")
+        assertEquals(true, yes.execution?.executed, "executes on assent: ${yes.reply}")
+        assertEquals("Shannon", seen?.parameters?.get("to"))
+        assertEquals("I love her", seen?.parameters?.get("body"))
+    }
+
+    @Test
+    fun `tell a person parses, tell me does not`() {
+        var seen: ActionProposal? = null
+        val h = harnessWith { p ->
+            seen = p
+            DeviceOutcome("Text sent.")
+        }
+        h.say("tell Shannon I love her")
+        h.say("yes")
+        assertEquals("Shannon", seen?.parameters?.get("to"))
+        val ask = h.say("tell me about Shannon")
+        assertTrue(ask.intent != Intent.ACT || ask.proposal == null, "tell me stays a question: ${ask.reply}")
+    }
+
+    @Test
     fun `what can you do answers capabilities, not evidence search`() {
         val h = harnessWith { DeviceOutcome("ok") }
         val r = h.say("what can u do?")
