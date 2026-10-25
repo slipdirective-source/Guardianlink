@@ -496,6 +496,23 @@ class Conversation(private val deps: ConversationDeps) {
             return base(Intent.QUERY, sb.toString(), before)
         }
 
+        // --- connect my email: a pathway answer, never a note ------
+        if (Regex("\\b(connect|set up|setup|hook up|link)\\b[^.]*\\b(email|mail|gmail|mailbox)\\b|\\b(email|mail)\\b[^.]*\\bfor context\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
+            return base(
+                Intent.CONFIGURE,
+                "Email connects in Settings — bottom right, then \"Connected email\": your address and an app password. The credentials are sealed in this phone's Keystore and never enter the record; the mail itself is what I read for context. Once it's connected, say \"check my email\" and I'll report what's there.",
+                before,
+            )
+        }
+        // --- "don't just record it": the complaint is heard as one --
+        if (lower.contains("just record") || Regex("^(don'?t|do not|stop|never)\\b[^.]*\\brecord\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
+            return base(
+                Intent.CLARIFY,
+                "Heard — and you're right. A command is supposed to pipeline: proposal, your say-so, execution, outcome. Filing one as a note instead is the exact failure this system exists to refuse. Say the command again and watch it move — or ask \"what can you do\" for the forms I hold.",
+                before,
+            )
+        }
+
         // --- act: device actions (the phone, operated as him) ----
         // A request becomes a proposal; policy, assent, and the
         // record apply exactly as for any governed action. The
@@ -727,7 +744,9 @@ class Conversation(private val deps: ConversationDeps) {
         // a record.
         val commandShaped =
             Regex("^(send|call|text|email|message|dial|phone|open|remind|book|order|pay|schedule)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
-                Regex("\\b(i want you to|please|can you|could you|will you)\\s+(send|call|text|email|message|tell|open|remind|book|order|pay|schedule)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
+                Regex("\\b(i want you to|please|can you|could you|will you)\\s+(send|call|text|email|message|tell|open|remind|book|order|pay|schedule)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
+                Regex("\\bi want\\b.*\\b(send|call|text|email|message|open|connect|check|track|book|order|pay|schedule|set up)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
+                Regex("^let'?s\\b.*\\b(send|call|text|email|message|open|connect|check|track|book|order|pay|schedule|set up)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
         if (commandShaped) {
             return clarify(
                 Intent.CLARIFY,
