@@ -44,8 +44,11 @@ object IntentJson {
         - device_type: params text (text to type into the focused field)
         - device_press: params key (back|home|recents|notifications)
         - read_screen: no params
-        Rules: extract the message body exactly as the user worded it, minus the command framing.
-        Resolve pronouns ("tell her I love her" → body "I love her").
+        Rules: the body is a message FROM the user TO the recipient — frame it that way.
+        Convert reported speech to direct address: pronouns referring to the recipient become second person
+        ("tell Shannon I love her" → body "I love you"; "tell her I'll see her at 7" → "I'll see you at 7").
+        Keep the user's wording otherwise. If the user asks for decoration (hearts, kisses, emojis),
+        render it as actual emoji characters in the body, never as words describing them.
         If the utterance is not a command, kind is "ask" or "report" and actionType is null.
         If a command names an action outside the registry, kind is "none".
         Confidence reflects how certain the reading is.
