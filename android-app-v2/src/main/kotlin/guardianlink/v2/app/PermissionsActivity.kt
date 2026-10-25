@@ -39,11 +39,6 @@ class PermissionsActivity : AppCompatActivity() {
 
     private lateinit var list: LinearLayout
 
-    private val healthPermsLauncher =
-        registerForActivityResult(
-            androidx.health.connect.client.PermissionController.createRequestPermissionsResultContract(),
-        ) { buildRows() }
-
     /** Health Connect grants live in Health Connect, not the runtime permission store. */
     private fun healthGranted(): Boolean = try {
         if (androidx.health.connect.client.HealthConnectClient.getSdkStatus(this) !=
@@ -64,6 +59,10 @@ class PermissionsActivity : AppCompatActivity() {
     }
 
     private fun requestHealthPermissions() {
+        // The pinned client (alpha07, the compileSdk-34 line) has no
+        // in-app request contract; grants are made in Health
+        // Connect's own screens — App permissions → GuardianLink.
+        // The row's pathway opens exactly that home.
         try {
             if (androidx.health.connect.client.HealthConnectClient.getSdkStatus(this) !=
                 androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE
@@ -71,14 +70,10 @@ class PermissionsActivity : AppCompatActivity() {
                 Toast.makeText(this, "Health Connect isn't available on this phone.", Toast.LENGTH_LONG).show()
                 return
             }
-            healthPermsLauncher.launch(HealthConnectCollector.PERMISSIONS)
+            Toast.makeText(this, "In Health Connect: App permissions → GuardianLink → allow steps, heart rate, sleep, oxygen, weight.", Toast.LENGTH_LONG).show()
+            startActivity(Intent("androidx.health.connect.action.HEALTH_HOME_SETTINGS"))
         } catch (t: Throwable) {
-            // Fall back to the Health Connect home, where grants live.
-            try {
-                startActivity(Intent("androidx.health.connect.action.HEALTH_HOME_SETTINGS"))
-            } catch (e: Exception) {
-                openAppDetails()
-            }
+            openAppDetails()
         }
     }
 
