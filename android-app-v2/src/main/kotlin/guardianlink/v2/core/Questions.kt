@@ -281,13 +281,31 @@ class QuestionEngine(
                     retractions = emptyList(),
                 )
             }
-            val recent = all.sortedBy { it.seq }.takeLast(6)
-            val lines = recent.map { e -> proseClaim(e.claim) }
+            // History is a PATH: where the sovereign has been, plus
+            // what materially executed along the way. It is not a
+            // dump of the last six ledger entries — governance
+            // chatter, collector status, and filed notes are not a
+            // trajectory (2026-10-25: a recorded sentence about
+            // Shannon narrated as "how you got here").
+            val path = all.filter { e -> e.topic.startsWith("location.") }.sortedBy { it.seq }.takeLast(6)
+            val outcomes = all.filter { e -> e.kind == EventKind.OUTCOME }.sortedBy { it.seq }.takeLast(3)
+            if (path.isEmpty() && outcomes.isEmpty()) {
+                return EvalResult(
+                    text = "No path recorded yet — nothing has moved and nothing has executed since tracking started.",
+                    delta = Delta.UNKNOWN,
+                    basis = Basis.NONE,
+                    evidenceIds = emptyList(),
+                    conflicts = emptyList(),
+                    retractions = all.filter { e -> ledger.isRetracted(e.id) }.map { it.id },
+                )
+            }
+            val lines = (path + outcomes).sortedBy { it.seq }.map { e -> proseClaim(e.claim) }
+            val shown = (path + outcomes).sortedBy { it.seq }
             return EvalResult(
                 text = "Here's how you got here:\n" + lines.joinToString("\n"),
                 delta = Delta.DISTINGUISHED,
                 basis = Basis.MIXED,
-                evidenceIds = recent.map { it.id },
+                evidenceIds = shown.map { it.id },
                 conflicts = emptyList(),
                 retractions = all.filter { e -> ledger.isRetracted(e.id) }.map { it.id },
             )
