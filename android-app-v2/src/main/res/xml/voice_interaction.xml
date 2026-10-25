@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Assistant-role metadata for GlVoiceInteractionService. Declares the
+  session service that receives the system summon and the recognition
+  service component the role contract requires. Keyguard launch is
+  NOT supported: a summon from the lock screen must unlock first —
+  the sovereign's voice session never bypasses his own lock.
+-->
+<voice-interaction xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="guardianlink.v2.app.GlSessionService"
+    android:recognitionService="guardianlink.v2.app.GlRecognitionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="false" />
