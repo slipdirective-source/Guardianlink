@@ -40,6 +40,13 @@ object WakeWordEngine {
     private var running = false
     private var worker: Thread? = null
 
+    /** Live truth for the Settings status line — never prefs-derived. */
+    @Volatile
+    var isRunning: Boolean = false
+
+    @Volatile
+    var lastError: String? = null
+
     fun modelDir(context: Context): File = File(context.applicationContext.filesDir, "vosk-model")
 
     fun modelInstalled(context: Context): Boolean =
@@ -87,6 +94,8 @@ object WakeWordEngine {
         val phrase = WakePrefs.phrase(appContext).lowercase().trim()
         if (phrase.isBlank()) return
         running = true
+        isRunning = true
+        lastError = null
         worker = thread(name = "gl-wake-word", isDaemon = true) {
             var model: Model? = null
             var recognizer: Recognizer? = null
@@ -108,11 +117,24 @@ object WakeWordEngine {
                     AudioFormat.ENCODING_PCM_16BIT,
                     bufferSize,
                 )
+                if (record.state != AudioRecord.STATE_INITIALIZED) {
+                    throw IllegalStateException("the microphone didn't open")
+                }
                 record.startRecording()
                 val buffer = ByteArray(4096)
+                var deadReads = 0
                 while (running) {
                     val read = record.read(buffer, 0, buffer.size)
-                    if (read <= 0) continue
+                    if (read <= 0) {
+                        // A mic that never delivers is a failed
+                        // ear, not a quiet room — say so.
+                        if (++deadReads > 200) {
+                            lastError = "the microphone isn't delivering audio"
+                            break
+                        }
+                        continue
+                    }
+                    deadReads = 0
                     if (recognizer.acceptWaveForm(buffer, read)) {
                         val text = (JsonParser.parse(recognizer.result) as? Map<*, *>)?.get("text") as? String
                         if (text != null && text.trim() == phrase) {
@@ -122,8 +144,10 @@ object WakeWordEngine {
                     }
                 }
             } catch (e: Exception) {
+                lastError = e.message ?: e.javaClass.simpleName
                 Log.w(TAG, "wake loop ended", e)
             } finally {
+                isRunning = false
                 try { record?.stop() } catch (e: Exception) { /* already stopped */ }
                 record?.release()
                 recognizer?.close()
@@ -134,6 +158,7 @@ object WakeWordEngine {
 
     fun stop() {
         running = false
+        isRunning = false
         worker = null
     }
 }
