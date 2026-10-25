@@ -45,6 +45,8 @@ class SensingService : Service() {
     private var deviceStateCollector: DeviceStateCollector? = null
     private var locationCollector: LocationCollector? = null
     private var motionCollector: MotionCollector? = null
+    private var calendarCollector: CalendarCollector? = null
+    private var scheduler: java.util.concurrent.ScheduledExecutorService? = null
 
     @Volatile
     private var running = false
@@ -82,6 +84,41 @@ class SensingService : Service() {
         motionCollector = motion
         motion.start()
 
+        // Phone-context polls: the calendar (every 5 minutes) and
+        // the connected mailbox (every 15 minutes). Both enter
+        // through the same governed boundary; a missing grant or an
+        // unconnected mailbox names itself unavailable there.
+        val calendar = CalendarCollector(
+            context = this,
+            sink = { topic, claim -> admitObservation(app, "calendar", topic, claim, confidence = 0.95) },
+            onUnavailable = { reason -> markUnavailable(app, "calendar", reason) },
+        )
+        calendarCollector = calendar
+        val health = HealthConnectCollector(
+            context = this,
+            sink = { topic, claim -> admitObservation(app, "health", topic, claim, confidence = 0.9) },
+            onUnavailable = { reason -> markUnavailable(app, "health", reason) },
+        )
+        val sched = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "gl-v2-context-polls").apply { isDaemon = true }
+        }
+        scheduler = sched
+        sched.scheduleWithFixedDelay({
+            try { calendar.pollOnce() } catch (t: Throwable) { Log.w(TAG, "calendar poll failed", t) }
+        }, 0, 5, java.util.concurrent.TimeUnit.MINUTES)
+        sched.scheduleWithFixedDelay({
+            try { health.pollOnce() } catch (t: Throwable) { Log.w(TAG, "health poll failed", t) }
+        }, 45, 15 * 60, java.util.concurrent.TimeUnit.SECONDS)
+        sched.scheduleWithFixedDelay({
+            try {
+                val result = EmailSync.syncNow(this, app)
+                if (result.admitted > 0) maybePostCheckup(app)
+                if (result.error != null) Log.w(TAG, "email sync: ${result.error}")
+            } catch (t: Throwable) {
+                Log.w(TAG, "email sync failed", t)
+            }
+        }, 20, 15 * 60, java.util.concurrent.TimeUnit.SECONDS)
+
         running = true
         setWasRunning(this, true)
         Log.i(TAG, "sensing up (device state, location, motion — each as permitted)")
@@ -100,6 +137,9 @@ class SensingService : Service() {
         locationCollector = null
         motionCollector?.stop()
         motionCollector = null
+        calendarCollector = null
+        scheduler?.shutdownNow()
+        scheduler = null
         if (running) {
             running = false
             setWasRunning(this, false)
