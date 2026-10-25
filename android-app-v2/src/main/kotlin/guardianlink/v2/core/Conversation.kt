@@ -538,6 +538,8 @@ class Conversation(private val deps: ConversationDeps) {
         val textMatch = Regex("^(?:now\\s+|ok\\s+|okay\\s+)?(?:so\\s+)?(?:i want you to\\s+|please\\s+)?send\\s+(.+?)\\s+a\\s+(?:message|text|sms)\\s+(?:saying|telling\\s+(?:her|him|them)(?:\\s+that)?)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
             ?: Regex("^(?:now\\s+|ok\\s+|okay\\s+)?(?:please\\s+)?send (?:a )?(?:text|message|sms) to\\s+(.+?)\\s+(?:saying|that says|telling\\s+(?:her|him|them)(?:\\s+that)?)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
             ?: Regex("^text\\s+(.+?)\\s+(?:saying|that says)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+            ?: Regex("^text\\s+(.+?)\\s+(?:and\\s+)?tell\\s+(?:her|him|them)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+            ?: Regex("^(?:now\\s+|ok\\s+|okay\\s+)?send\\s+(.+?)\\s+a\\s+(?:message|text|sms)\\s+(?:and\\s+)?tell\\s+(?:her|him|them)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
             ?: Regex("^message\\s+(.+?)\\s+(?:saying|that)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
             ?: Regex("^text\\s+(.+?)\\s*[:—]\\s*(.+)$", RegexOption.IGNORE_CASE).find(text)
         if (textMatch != null) {
