@@ -94,7 +94,7 @@ class MainActivity : AppCompatActivity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(palette.headerBg)
+            background = UiKit.headerGradient(this@MainActivity, palette)
             elevation = dp(4).toFloat()
             setPadding(dp(16), dp(14), dp(16), dp(14))
             addView(badge)
@@ -194,15 +194,34 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        setContentView(LinearLayout(this).apply {
+        // Cosmic stage: page-depth gradient at the root, a fixed
+        // starfield over it, and the content floating transparent
+        // on top — the sky stays put while the conversation moves.
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(palette.pageBg)
             addView(header)
             addView(nowScroll)
             addView(chatScroll)
             addView(chipRow)
             addView(inputRow)
             addView(nav)
+        }
+        setContentView(android.widget.FrameLayout(this).apply {
+            background = UiKit.pageGradient(this@MainActivity, palette)
+            addView(
+                StarfieldView(this@MainActivity, palette.userBubble, GlPrefs.isDark(this@MainActivity)),
+                android.widget.FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+            addView(
+                content,
+                android.widget.FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
         })
 
         if (!seeded) {
@@ -400,8 +419,8 @@ class MainActivity : AppCompatActivity() {
             // Tailed bubbles: three generous corners and one small
             // one at the sender's side — the shape every chat app
             // uses, instead of identical log rectangles.
-            val r = 18f * resources.displayMetrics.density
-            val tail = 5f * resources.displayMetrics.density
+            val r = 25f * resources.displayMetrics.density
+            val tail = 8f * resources.displayMetrics.density
             val radii = if (fromUser) {
                 floatArrayOf(r, r, r, r, tail, tail, r, r)
             } else {
@@ -409,10 +428,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (fromUser) {
                 setTextColor(Color.WHITE)
-                background = GradientDrawable().apply {
-                    setColor(palette.userBubble)
-                    cornerRadii = radii
-                }
+                background = UiKit.userGradient(this@MainActivity, palette, radii)
             } else {
                 setTextColor(palette.appBubbleText)
                 elevation = dp(2).toFloat()
