@@ -66,6 +66,37 @@ class SensorLogicTest {
     }
 
     @Test
+    fun `place name composes street town county state and collapses duplicates`() {
+        assertEquals(
+            "344 W Leota St, Scottsburg, Scott County, Indiana",
+            LocationLogic.formatPlaceName("344 W Leota St", "Scottsburg", null, "Scott County", "Indiana"),
+        )
+        assertEquals(
+            "Finley Township, Scott County, Indiana",
+            LocationLogic.formatPlaceName(null, null, "Finley Township", "Scott County", "Indiana"),
+            "with no city named, the township (subLocality) carries the place",
+        )
+        assertEquals(
+            "Scottsburg, Indiana",
+            LocationLogic.formatPlaceName(null, "Scottsburg", "Scottsburg", null, "Indiana"),
+            "a locality repeated as subLocality is not printed twice",
+        )
+        assertNull(LocationLogic.formatPlaceName(null, " ", null, null, null), "nothing resolved means no place, never an invented one")
+    }
+
+    @Test
+    fun `place claim leads with the place and keeps the fix as evidence`() {
+        val claim = LocationLogic.formatPlaceClaim(
+            "Scottsburg, Scott County, Indiana", 38.68632, -85.77766, 8.0, LocationLogic.PROVIDER_GPS, lastKnown = false,
+        )
+        assertTrue(claim.startsWith("You are near Scottsburg, Scott County, Indiana"), "place leads: $claim")
+        assertTrue(claim.contains("38.68632"), "coordinates stay in the claim as evidence: $claim")
+        val noPlace = LocationLogic.formatPlaceClaim(null, 38.68632, -85.77766, null, LocationLogic.PROVIDER_NETWORK, lastKnown = true)
+        assertTrue(noPlace.contains("place name unavailable"), "an unresolved place is named as such: $noPlace")
+        assertTrue(noPlace.contains("(last known fix)"), "staleness survives the place formatting: $noPlace")
+    }
+
+    @Test
     fun `motion classifier reports transitions only and settles back to still`() {
         val classifier = MotionClassifier()
         repeat(20) {
