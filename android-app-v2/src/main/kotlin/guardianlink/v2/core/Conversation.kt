@@ -395,6 +395,21 @@ class Conversation(private val deps: ConversationDeps) {
             Regex("^(what|where|how|who|when|why|is|are|do|does|can)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
             lower.startsWith("tell me ")
         ) {
+            // Trip speeds (his ask, 2026-10-25): answered from the
+            // trip.summary evidence the tracker admitted when the
+            // trip closed — top speed, average, distance, time.
+            if (Regex("\\b(top speed|fastest|average speed|how fast|last trip|my trip|trip speed)\\b").containsMatchIn(lower)) {
+                val trip = deps.ledger.liveEvents().lastOrNull { it.topic == "trip.summary" }
+                return if (trip != null) {
+                    base(Intent.ASK, "Your last trip, from the record: ${trip.claim}", before)
+                } else {
+                    base(
+                        Intent.ASK,
+                        "No completed trip on record yet. Trips are logged as you travel — a trip closes after about 8 minutes of stillness, and then I can tell you its top speed, average speed, and distance.",
+                        before,
+                    )
+                }
+            }
             val cluster: String? =
                 if (Regex("where am i\\b").containsMatchIn(lower)) {
                     "position"
