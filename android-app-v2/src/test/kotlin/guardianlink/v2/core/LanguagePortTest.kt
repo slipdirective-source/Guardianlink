@@ -39,7 +39,7 @@ class LanguagePortTest {
         // No deterministic form matches this phrasing.
         val r = h.say("ping Shannon and let her know I love her")
         assertTrue(r.reply.startsWith("Send this text?"), "review prompt from validated intent: ${r.reply}")
-        assertTrue(r.reply.contains("To: Shannon") && r.reply.contains("\"I love her\""), "exact content: ${r.reply}")
+        assertTrue(r.reply.contains("To: Shannon") && r.reply.contains("\"I love you\""), "exact content: ${r.reply}")
         assertEquals("send_text", r.proposal?.actionType)
         // And the parse is on the record as agent-derived.
         val parse = h.ledger.liveEvents().firstOrNull { it.topic == "language.parse" }
