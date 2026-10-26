@@ -117,18 +117,68 @@ object PhoneActions {
                 }
                 sms.sendMultipartTextMessage(number, null, parts, intents, null)
             }
-            if (!latch.await(20, TimeUnit.SECONDS)) {
-                throw IllegalStateException(
-                    "The text was handed to the carrier, but no send confirmation came back within 20 seconds — the send is unconfirmed, not known-failed.",
-                )
+            // Confirmation is decided by the phone's own SMS
+            // store: a text sitting in the Sent folder was taken
+            // by the carrier, whatever happened to the result
+            // broadcast — which this device demonstrably does not
+            // deliver to the app (2026-10-26: the texts arrived,
+            // the confirmations never did). The broadcast still
+            // settles it early when it does come, and a broadcast
+            // refusal still counts as a refusal.
+            val sentAt = System.currentTimeMillis()
+            val deadlineMs = sentAt + 20_000
+            var broadcastRefused = false
+            var storeConfirmed = false
+            while (System.currentTimeMillis() < deadlineMs && !storeConfirmed) {
+                if (latch.await(1200, TimeUnit.MILLISECONDS)) {
+                    if (results[0] != android.app.Activity.RESULT_OK) broadcastRefused = true
+                    break
+                }
+                storeConfirmed = smsStoreShowsSent(context, number, body, sentAt)
             }
-            if (results[0] != android.app.Activity.RESULT_OK) {
+            if (broadcastRefused) {
                 throw IllegalStateException("The carrier refused the text (result ${results[0]}).")
+            }
+            if (!storeConfirmed && results[0] != android.app.Activity.RESULT_OK) {
+                throw IllegalStateException(
+                    "The text was handed to the carrier, but it didn't reach the phone's Sent folder and no carrier confirmation arrived within 20 seconds — the send is unconfirmed, not known-failed.",
+                )
             }
         } finally {
             pendingSms.remove(token)
         }
         return DeviceOutcome("Text sent to $who: \"$body\"", mapOf("number" to number))
+    }
+
+    /**
+     * True when the phone's SMS store holds this message in the
+     * Sent folder — the carrier took it, whether or not the
+     * result broadcast ever arrived. Needs READ_SMS; without
+     * the grant the check quietly reports false and the
+     * broadcast decides alone.
+     */
+    private fun smsStoreShowsSent(context: Context, number: String, body: String, sinceMs: Long): Boolean {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) return false
+        val wantDigits = number.filter { it.isDigit() }.takeLast(10)
+        if (wantDigits.isEmpty()) return false
+        return try {
+            var found = false
+            context.contentResolver.query(
+                android.net.Uri.parse("content://sms/sent"),
+                arrayOf("address"),
+                "body = ? AND date >= ?",
+                arrayOf(body, (sinceMs - 120_000).toString()),
+                "date DESC",
+            )?.use { cursor ->
+                while (!found && cursor.moveToNext()) {
+                    val addrDigits = (cursor.getString(0) ?: "").filter { it.isDigit() }.takeLast(10)
+                    if (addrDigits == wantDigits) found = true
+                }
+            }
+            found
+        } catch (t: Throwable) {
+            false
+        }
     }
 
     /** Waiting SMS confirmations, token → (latch, result slot). Filled by [SmsSentReceiver]. */
