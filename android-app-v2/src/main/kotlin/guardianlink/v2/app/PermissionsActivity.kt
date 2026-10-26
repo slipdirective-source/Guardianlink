@@ -283,7 +283,7 @@ class PermissionsActivity : AppCompatActivity() {
             statusText = if (smsGranted) "On — text actions can execute." else "Off — text actions stop and say why.",
             actionLabel = if (smsGranted) null else "Allow",
             action = if (smsGranted) null else ({
-                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.SEND_SMS), REQ_SMS)
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.SEND_SMS, Manifest.permission.READ_SMS), REQ_SMS)
             }),
         )
         val contactsGranted = granted(Manifest.permission.READ_CONTACTS)
