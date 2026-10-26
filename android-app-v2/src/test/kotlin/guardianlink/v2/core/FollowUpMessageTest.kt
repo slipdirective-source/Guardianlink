@@ -48,7 +48,8 @@ class FollowUpMessageTest {
     fun `a send with no bindable recipient clarifies in plain words`() {
         val h = GuardianLink()
         val r = h.say("send a message about the thing")
-        assertTrue(r.reply.contains("Who should I send it to"), "no policy vocabulary reaches the sovereign: ${r.reply}")
+        assertTrue(r.reply.contains("I can send that"), "plain words, no policy vocabulary: ${r.reply}")
+        assertTrue((r.clarifyQuestion ?: "").contains("Who should I send it to"), "the clarify question names the gap: ${r.clarifyQuestion}")
     }
 
     @Test
