@@ -57,6 +57,7 @@
          behind its own runtime grant and every use behind assent. -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
     <!-- Health collector: Health Connect read grants (steps, heart
