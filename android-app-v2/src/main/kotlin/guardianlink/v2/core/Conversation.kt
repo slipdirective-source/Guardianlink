@@ -75,6 +75,13 @@ fun inferPolarity(text: String): Polarity =
  */
 class Conversation(private val deps: ConversationDeps) {
 
+    /**
+     * Who the most recent text proposal was for — what a
+     * follow-up "send her…" points at. Session memory:
+     * a conversation remembers who it was just talking about.
+     */
+    private var lastMessageRecipient: String? = null
+
     private fun versionsBefore(): Map<String, Int> =
         deps.questions.all().associate { q -> q.id to q.current.version }
 
@@ -287,6 +294,21 @@ class Conversation(private val deps: ConversationDeps) {
             }
             sb.append("Every reading is readable in the Data vault, tabbed by kind. To stop one, say \"pause location\" — it goes through the same assent ceremony as any governed action.")
             return base(Intent.QUERY, sb.toString(), before)
+        }
+
+        // --- ask: outside minds ("talk to copilot for me?") --------
+        // Outside agents are participants in the architecture,
+        // never authorities — and they are not plugged in yet.
+        // The honest answer names that, and the rule they'd
+        // arrive under.
+        if ((lower.contains("copilot") || lower.contains("claude") || lower.contains("grok") || lower.contains("chatgpt") || lower.contains("gemini")) &&
+            Regex("\\b(talk|speak|chat|ask|message|connect|reach|call)\\b").containsMatchIn(lower)
+        ) {
+            return base(
+                Intent.ASK,
+                "Outside minds aren't plugged in yet — Copilot, Claude and Grok can't be reached from inside this app today. They're on the roadmap as participants, under the same rules as everything else here: they can propose, they never act on their own, and nothing moves without your assent. For now, carrying something to them goes through you.",
+                before,
+            )
         }
 
         // --- capabilities: "what can you do?" ----------------------
@@ -710,11 +732,57 @@ class Conversation(private val deps: ConversationDeps) {
             return base(Intent.ACT, "Denied. ${proposal.policyReason}", before).copy(proposal = proposal)
         }
 
+        // --- act: follow-up message ("send her …") -----------------
+        // The recipient carries from the most recent text in
+        // this conversation; a bare pronoun refers to them.
+        // With no one carried, it asks — a recipient is never
+        // guessed.
+        val followMatch = Regex("^(?:now\\s+|ok\\s+|okay\\s+)?send\\s+(her|him|them)\\s+(.+)$", RegexOption.IGNORE_CASE).find(text)
+        if (followMatch != null) {
+            val carried = lastMessageRecipient
+            if (carried == null) {
+                return clarify(
+                    Intent.CLARIFY,
+                    "I don't have a message going to anyone yet in this conversation, so that has no one to point at. Who should I send it to?",
+                    before,
+                    "Who should I send it to?",
+                )
+            }
+            val followBody = followMatch.groupValues[2].trim().trimEnd('.')
+            val proposal = deps.actions.propose(
+                ProposalInput(
+                    actionType = "send_text",
+                    target = carried,
+                    parameters = mapOf("to" to carried, "body" to followBody),
+                    expectedEffect = "Send a text to $carried: \"$followBody\"",
+                    reversibility = Reversibility.IRREVERSIBLE,
+                    consequenceClass = ConsequenceClass.EXTERNAL,
+                    requiredAuthority = RequiredAuthority.FRESH_ASSENT,
+                    requestedBy = "sovereign",
+                ),
+            )
+            return finishProposal(proposal, before, "Action proposed: text $carried.")
+        }
+
         // --- act: external send (no adapter in this core) ---
         if (Regex("^(send|email|text|message)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
             val isEmail = lower.contains("email")
             val toMatch = Regex("\\bto\\s+(?:the\\s+)?([a-z]+(?:\\s[a-z]+)?)(?=\\s+about\\b|\\s*$|\\.)").find(lower)
             val target = toMatch?.groupValues?.get(1)?.trim() ?: "unspecified"
+            if (target == "unspecified") {
+                // A send with no bindable recipient is a question,
+                // not a proposal — and it answers in plain words,
+                // never in policy vocabulary. (2026-10-26: his
+                // follow-up text landed here and got a policy
+                // dump — "send_message to unspecified" — as its
+                // reply.)
+                return clarify(
+                    Intent.CLARIFY,
+                    "I can send that — I need who it's for and what it says, in one line: \"text Maria saying I'll be there at 7\".",
+                    before,
+                    "Who should I send it to, and what should it say?",
+                )
+            }
             val proposal = deps.actions.propose(
                 ProposalInput(
                     actionType = if (isEmail) "send_email" else "send_message",
@@ -934,6 +1002,9 @@ class Conversation(private val deps: ConversationDeps) {
     }
 
     private fun finishProposal(proposal: ActionProposal, before: Map<String, Int>, lead: String): ConversationResult {
+        if (proposal.actionType == "send_text") {
+            lastMessageRecipient = proposal.target
+        }
         if (proposal.policy == PolicyOutcome.EXECUTABLE_UNDER_RAIL) {
             val exec = deps.actions.execute(proposal.id)
             return base(Intent.ACT, "$lead One of your standing rails already covers it, so it ran without asking again. ${exec.message}", before)
