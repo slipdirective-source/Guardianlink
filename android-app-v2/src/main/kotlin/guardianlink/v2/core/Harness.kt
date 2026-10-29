@@ -46,6 +46,12 @@ class GuardianLink(
      * See LanguagePort.kt for the contract.
      */
     languagePort: LanguagePort? = null,
+    /**
+     * Live device-control (accessibility) grant state from the
+     * platform layer, forwarded to the conversation so capability
+     * answers report the grant truthfully (see ConversationDeps).
+     */
+    deviceControlLive: (() -> Boolean)? = null,
 ) {
     val ledger: Ledger = Ledger(deviceId, now)
     val audit: AuditLog = AuditLog(now)
@@ -92,6 +98,10 @@ class GuardianLink(
                 deviceAction = deviceActionHandler,
             ),
         )
+        // Agency's open options come from the action layer (rails
+        // in force, recent counterparties) — wired here because the
+        // engine cannot depend on the layer that depends on it.
+        questions.agencyOptionsProvider = { actions.agencyOptions() }
         conversation = Conversation(
             ConversationDeps(
                 ledger = ledger,
@@ -100,6 +110,7 @@ class GuardianLink(
                 collectors = collectors,
                 now = now,
                 languagePort = languagePort,
+                deviceControlLive = deviceControlLive,
             ),
         )
         // Every admission — whoever caused it — lands in the audit.
