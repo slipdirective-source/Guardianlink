@@ -92,6 +92,17 @@ class QuestionEngine(
     /** set by the harness to audit material answer changes */
     var onVersionChange: ((StandingQuestion, AnswerSnapshot) -> Unit)? = null
 
+    /**
+     * Set by the harness to the action layer's open options (rails
+     * in force, recent counterparties) — the Agency answer's raw
+     * material (SMOOTHNESS-ADDENDUM §4). The engine cannot see the
+     * action layer directly (the layer depends on the engine), so
+     * the harness wires this after construction, like
+     * [onVersionChange]. Null = no options source; Agency then
+     * speaks only from evidence, as before.
+     */
+    var agencyOptionsProvider: (() -> List<String>)? = null
+
     init {
         define("position", "Where am I?", ClusterId.POSITION, listOf("location", "medication", "state", "collector"), emptyList(), 100)
         define("history", "How did I get here?", ClusterId.HISTORY, emptyList(), emptyList(), 90)
@@ -201,7 +212,8 @@ class QuestionEngine(
                 }
             states.add(TopicState(topic, sorted, sorted.lastOrNull(), conflict))
         }
-        val retracted = ledger.allEvents().filter { e -> ledger.isRetracted(e.id) }.map { it.id }
+        val retractedIds = ledger.retractedIds()
+        val retracted = ledger.allEvents().filter { e -> retractedIds.contains(e.id) }.map { it.id }
         return Pair(states, retracted)
     }
 
@@ -260,7 +272,7 @@ class QuestionEngine(
             val allMarked = markerTopics.all { t -> markers.any { m -> m.topic == t || m.topic.startsWith(t) } }
             if (allMarked && markers.isNotEmpty()) {
                 return EvalResult(
-                    text = "Not applicable: every dependency of \"${q.text}\" is declared inapplicable.",
+                    text = "Nothing about that applies right now.",
                     delta = Delta.INAPPLICABLE,
                     basis = Basis.NONE,
                     evidenceIds = markers.map { it.id },
@@ -271,9 +283,13 @@ class QuestionEngine(
         }
 
         if (q.cluster == ClusterId.HISTORY) {
+            // One pass for the retracted set: asking the ledger per
+            // event here made every History recompute O(n^2) — the
+            // same arithmetic class as the Vault freeze, one layer down.
+            val retractedList = ledger.retractedIds().let { ids -> all.filter { e -> ids.contains(e.id) }.map { it.id } }
             if (all.isEmpty()) {
                 return EvalResult(
-                    text = "No events yet. Nothing has been admitted, so there is no path to report.",
+                    text = "Nothing yet — nothing has happened since tracking started, so there's no path to report.",
                     delta = Delta.UNKNOWN,
                     basis = Basis.NONE,
                     evidenceIds = emptyList(),
@@ -296,10 +312,13 @@ class QuestionEngine(
                     basis = Basis.NONE,
                     evidenceIds = emptyList(),
                     conflicts = emptyList(),
-                    retractions = all.filter { e -> ledger.isRetracted(e.id) }.map { it.id },
+                    retractions = retractedList,
                 )
             }
-            val lines = (path + outcomes).sortedBy { it.seq }.map { e -> proseClaim(e.claim) }
+            val rawLines = (path + outcomes).sortedBy { it.seq }.map { e -> proseClaim(e.claim) }
+            val lines = rawLines.filterIndexed { i, line ->
+                i == 0 || !line.trim().trimEnd('.').equals(rawLines[i - 1].trim().trimEnd('.'), ignoreCase = true)
+            }
             val shown = (path + outcomes).sortedBy { it.seq }
             return EvalResult(
                 text = "Here's how you got here:\n" + lines.joinToString("\n"),
@@ -307,7 +326,7 @@ class QuestionEngine(
                 basis = Basis.MIXED,
                 evidenceIds = shown.map { it.id },
                 conflicts = emptyList(),
-                retractions = all.filter { e -> ledger.isRetracted(e.id) }.map { it.id },
+                retractions = retractedList,
             )
         }
 
@@ -327,6 +346,36 @@ class QuestionEngine(
         val evidenceIds = states.flatMap { s -> s.live.map { it.id } }
 
         if (states.isEmpty()) {
+            // Each question reads quiet in its OWN type (§4/§5):
+            // trajectory with no evidence says there is no movement
+            // on record; agency with no evidence still owes the
+            // sovereign his open options, because a rail in force
+            // lives in the action layer, not in evidence topics.
+            if (q.cluster == ClusterId.TRAJECTORY) {
+                return EvalResult(
+                    text = "No movement on record today — nothing shows you going anywhere new yet.",
+                    delta = Delta.UNKNOWN,
+                    basis = Basis.NONE,
+                    evidenceIds = emptyList(),
+                    conflicts = emptyList(),
+                    retractions = retracted,
+                )
+            }
+            if (q.cluster == ClusterId.AGENCY) {
+                val options = agencyOptionsProvider?.invoke() ?: emptyList()
+                return EvalResult(
+                    text = if (options.isNotEmpty()) {
+                        options.joinToString("\n")
+                    } else {
+                        "Nothing is waiting on you, and no rail is in force right now."
+                    },
+                    delta = Delta.UNKNOWN,
+                    basis = Basis.NONE,
+                    evidenceIds = emptyList(),
+                    conflicts = emptyList(),
+                    retractions = retracted,
+                )
+            }
             return EvalResult(
                 text = "I don't know yet — nothing on record bears on that.",
                 delta = Delta.UNKNOWN,
@@ -367,6 +416,17 @@ class QuestionEngine(
                 // "How did I get here?" must never read as a list of
                 // permission states.
                 if (s.topic.startsWith("collector.")) continue
+                // Trajectory answers in its own type (§4): the place
+                // you are AT is Position's sentence. Restating it
+                // here — worse, restating it three times — is the
+                // parroting the sovereign named nonsense. Trajectory
+                // gets a movement delta below, or the honest quiet.
+                if (q.cluster == ClusterId.TRAJECTORY && s.topic == "location") continue
+                // Agency answers in its own type (§4): the action
+                // log (proposals, executions, outcomes) is History's
+                // material. Listing what already ran as "what you
+                // can do" was the 2026-10-27 defect, verbatim.
+                if (q.cluster == ClusterId.AGENCY && s.topic.startsWith("action.")) continue
                 lines.add(renderStateLine(s))
             }
         }
@@ -374,12 +434,23 @@ class QuestionEngine(
         if (q.cluster == ClusterId.TRAJECTORY) {
             val loc = states.firstOrNull { it.topic == "location" }
             if (loc != null && loc.live.size > 1) {
-                lines.add("Movement: ${proseClaim(loc.live[0].claim).removeSuffix(".")} → ${proseClaim(loc.latest!!.claim)}")
+                val firstPlace = proseClaim(loc.live[0].claim).removeSuffix(".")
+                val lastPlace = proseClaim(loc.latest!!.claim).removeSuffix(".")
+                // A delta is a DIFFERENT place. Same place at both
+                // ends is not movement, and printing it as
+                // "Movement: X → X" is a position wearing
+                // trajectory's clothes (§4).
+                if (!firstPlace.equals(lastPlace, ignoreCase = true)) {
+                    lines.add("Movement: $firstPlace → ${proseClaim(loc.latest!!.claim)}")
+                }
             }
             for (s in states) {
                 if (s.latest != null && DRIFT_TERMS.any { t -> s.latest.claim.lowercase().contains(t) }) {
-                    lines.add("Drift signal: the latest ${s.topic} reading carries drift terms.")
+                    lines.add("Something in the latest ${s.topic.substringAfterLast('.').replace('_', ' ')} reading suggests drift.")
                 }
+            }
+            if (lines.isEmpty()) {
+                lines.add("No movement on record today — nothing shows you going anywhere new yet.")
             }
         }
         if (q.cluster == ClusterId.AGENCY) {
@@ -389,7 +460,15 @@ class QuestionEngine(
                 .toSet()
             val pending = proposals.filter { p -> !executed.contains(p.id) }
             for (p in pending) lines.add("Waiting on your say-so: ${proseClaim(p.claim)}")
+            // Open options: rails in force and people he can reach —
+            // what he CAN do, sourced from the action layer (§4).
+            agencyOptionsProvider?.invoke()?.let { options ->
+                for (option in options) {
+                    if (lines.none { it.equals(option, ignoreCase = true) }) lines.add(option)
+                }
+            }
             if (conflicts.isNotEmpty()) lines.add("Some options are blocked by a conflict that hasn't been resolved.")
+            if (lines.isEmpty()) lines.add("Nothing is waiting on you, and no rail is in force right now.")
         }
         if (q.cluster == ClusterId.CUSTOM) {
             val drift = states.any { s -> s.latest != null && DRIFT_TERMS.any { t -> s.latest.claim.lowercase().contains(t) } }
@@ -420,7 +499,16 @@ class QuestionEngine(
                 if (corroborated) Delta.EQUIVALENT else Delta.DISTINGUISHED
             }
 
-        return EvalResult(lines.joinToString("\n"), delta, basis, evidenceIds, conflicts, retracted)
+        // One fact, once (§2): identical sentences — the same claim
+        // admitted by two paths, the same place resolved twice —
+        // merge before rendering. Comparison is on the sentence,
+        // case- and punctuation-insensitive; the first (freshest
+        // composed) form is the one kept.
+        val seenSentences = HashSet<String>()
+        val dedupedLines = lines.filter { line ->
+            seenSentences.add(line.trim().trimEnd('.').lowercase())
+        }
+        return EvalResult(dedupedLines.joinToString("\n"), delta, basis, evidenceIds, conflicts, retracted)
     }
 
     fun recompute(q: StandingQuestion): AnswerSnapshot {
