@@ -226,6 +226,7 @@ object StateStore {
         zkBridge: ZkProverBridge = UnavailableZkBridge,
         deviceActionHandler: ((ActionProposal) -> DeviceOutcome)? = null,
         languagePort: LanguagePort? = null,
+        deviceControlLive: (() -> Boolean)? = null,
     ): GuardianLink? {
         val bytes = try {
             storage.read(name)
@@ -235,7 +236,7 @@ object StateStore {
             throw StateStoreException(StateStoreError.STORAGE_READ_FAILED, "could not read state \"$name\": ${e.message}")
         }
         if (bytes == null) return null
-        return deserialize(String(bytes, Charsets.UTF_8), now, zkBridge, deviceActionHandler, languagePort)
+        return deserialize(String(bytes, Charsets.UTF_8), now, zkBridge, deviceActionHandler, languagePort, deviceControlLive)
     }
 
     fun deserialize(
@@ -244,6 +245,7 @@ object StateStore {
         zkBridge: ZkProverBridge = UnavailableZkBridge,
         deviceActionHandler: ((ActionProposal) -> DeviceOutcome)? = null,
         languagePort: LanguagePort? = null,
+        deviceControlLive: (() -> Boolean)? = null,
     ): GuardianLink {
         val root = JsonParser.parse(text)
         val doc = asObject(root, "state document")
@@ -321,7 +323,7 @@ object StateStore {
         @Suppress("UNCHECKED_CAST")
         val restoredRevocationKeyId = (identityDoc as? Map<String, Any?>)?.get("revocationAuthorityKeyId") as? String
 
-        val gl = GuardianLink(now = now, deviceId = deviceId, zkBridge = zkBridge, deviceActionHandler = deviceActionHandler, languagePort = languagePort)
+        val gl = GuardianLink(now = now, deviceId = deviceId, zkBridge = zkBridge, deviceActionHandler = deviceActionHandler, languagePort = languagePort, deviceControlLive = deviceControlLive)
         gl.operatorKeyId = restoredOperatorKeyId
         gl.revocationAuthorityKeyId = restoredRevocationKeyId
         try {
@@ -531,6 +533,14 @@ object StateStore {
         base["active"] = r.active
         base["createdBy"] = r.createdBy
         base["createdAt"] = r.createdAt
+        // Conversational-rail bounds (SMOOTHNESS-ADDENDUM §15):
+        // additive and OPTIONAL, like the ZK record below — a rail
+        // committed without bounds serializes byte-identically to
+        // before. The terms are the rendering the sovereign
+        // assented to; they persist with the rail they bind.
+        if (r.timeBound != null) base["timeBound"] = r.timeBound
+        if (r.expiresAt != null) base["expiresAt"] = r.expiresAt
+        if (r.terms != null) base["terms"] = r.terms
         // Gate 3 record (ZK-GATE3-DESIGN section 5): additive and
         // OPTIONAL, emitted only when the rail carries commitments —
         // so a pre-ZK rail serializes byte-identically to before. The
@@ -585,6 +595,9 @@ object StateStore {
             createdBy = reqString(m, "createdBy"),
             createdAt = reqString(m, "createdAt"),
             zk = zk,
+            timeBound = m["timeBound"] as? String,
+            expiresAt = m["expiresAt"] as? String,
+            terms = m["terms"] as? String,
         )
     }
 
