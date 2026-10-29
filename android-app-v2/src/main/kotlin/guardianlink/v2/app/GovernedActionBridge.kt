@@ -70,7 +70,8 @@ class GovernedActionBridge(
             if (result is ConciergeInterface.ExecutionResult.Rejected && result.atGate == 3) {
                 val failureClass = guardianlink.v2.core.zk.ZkReason.className(wiring.lastReasonCode)
                 return outcome.copy(
-                    userMessage = "engine execution halts at Gate 3 (ZK proof rejected — $failureClass): ${result.reason}",
+                    userMessage = "It stopped at the proof check — the private proof that this action sits inside the rails you set didn't verify, so nothing ran. " +
+                        "A proof that doesn't check out halts; it never waves through. (Engine record: Gate 3, $failureClass — ${result.reason})",
                 )
             }
         }
