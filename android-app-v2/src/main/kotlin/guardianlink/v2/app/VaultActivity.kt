@@ -7,16 +7,15 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import guardianlink.v2.core.Delta
 import guardianlink.v2.core.EvidenceEvent
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.Executors
 
 /**
  * The data vault.
@@ -31,6 +30,17 @@ import java.time.format.DateTimeFormatter
  *
  * Everything on this screen is a read of the same core the chat
  * reads. There is no second copy of the data to drift.
+ *
+ * SMOOTHNESS-ADDENDUM rework (2026-10-28): the previous build did
+ * everything on the main thread, on a 3-second loop — recomputing
+ * chain verification (a SHA-256 per event) and rebuilding every
+ * card whether or not anything had changed. On a device holding
+ * weeks of data that is precisely an ANR: slow, glitchy, then
+ * "isn't responding". Now: reads are prepared off the main thread,
+ * the screen rebuilds only when the record actually changed, chain
+ * verification runs in the background and lands when it lands, and
+ * the Answers surface is composed prose with quiet captions — no
+ * version chips, no settle badges, no machinery.
  */
 class VaultActivity : AppCompatActivity() {
 
@@ -50,6 +60,26 @@ class VaultActivity : AppCompatActivity() {
     private lateinit var list: LinearLayout
     private val handler = Handler(Looper.getMainLooper())
     private val app: GuardianLinkV2App get() = application as GuardianLinkV2App
+
+    /** Off-main-thread preparation: filtering, copying, verifying. */
+    private val io = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "gl-vault-io").apply { isDaemon = true }
+    }
+
+    /** What the screen currently shows, as a change signature. */
+    @Volatile
+    private var renderedSignature: String = ""
+
+    /** Monotonic render token: a stale background read never overwrites a newer tab. */
+    @Volatile
+    private var renderToken: Int = 0
+
+    /** Chain verification, computed in the background; null until it lands. */
+    @Volatile
+    private var integrity: Map<String, Any?>? = null
+
+    @Volatile
+    private var integrityCheckedAtMs: Long = 0L
 
     private val refreshLoop = object : Runnable {
         override fun run() {
@@ -139,6 +169,11 @@ class VaultActivity : AppCompatActivity() {
         super.onPause()
     }
 
+    override fun onDestroy() {
+        io.shutdownNow()
+        super.onDestroy()
+    }
+
     // ------------------------------------------------------------------
 
     private fun renderTabs() {
@@ -159,6 +194,7 @@ class VaultActivity : AppCompatActivity() {
                 )
                 setOnClickListener {
                     tab = t
+                    renderedSignature = ""
                     renderTabs()
                     render()
                 }
@@ -166,41 +202,67 @@ class VaultActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * A cheap fingerprint of what would be drawn: the tab, the
+     * ledger's size and head, and the standing answers' versions.
+     * When it hasn't changed, the screen is already correct and the
+     * refresh loop does nothing — no rebuild, no re-layout, no jank.
+     */
+    private fun signature(): String = synchronized(app.coreLock) {
+        val events = app.core.ledger.events()
+        val head = events.lastOrNull()?.hash ?: "empty"
+        tab.name + "|" + events.size + "|" + head + "|" +
+            app.core.snapshot().joinToString(",") { "${it.id}:${it.current.version}" }
+    }
+
     private fun render() {
+        val sig = signature()
+        if (sig == renderedSignature) return
+        renderedSignature = sig
         val palette = GlPrefs.palette(this)
-        list.removeAllViews()
         when (tab) {
             Tab.ANSWERS -> renderAnswers(palette)
-            Tab.INBOX -> renderEvents(palette, "Nothing in the inbox yet — connect a mailbox in Settings, grant notification access, and mail context lands here.") {
+            Tab.INBOX -> renderEventsAsync(palette, "Nothing in the inbox yet — connect a mailbox in Settings, grant notification access, and mail context lands here.") {
                 it.topic.startsWith("email") || it.topic.startsWith("inbox") || it.topic.startsWith("calendar")
             }
-            Tab.HEALTH -> renderEvents(palette, "No health readings yet — grant Health Connect access in Settings → Permissions and readings from your watch and phone land here.") {
+            Tab.HEALTH -> renderEventsAsync(palette, "No health readings yet — grant Health Connect access in Settings → Permissions and readings from your watch and phone land here.") {
                 it.topic.startsWith("health")
             }
-            Tab.MONEY -> renderEvents(palette, "No money movement on record yet — bank and payment alerts arrive through notification access, and receipts through your connected mailbox.") {
+            Tab.MONEY -> renderEventsAsync(palette, "No money movement on record yet — bank and payment alerts arrive through notification access, and receipts through your connected mailbox.") {
                 it.topic.startsWith("finance")
             }
-            Tab.LOCATION -> renderEvents(palette, "No location records yet — start sensing with location granted and fixes will land here.") {
-                it.topic == "location" || it.topic == "location.fix"
+            // Places shows place prose. The raw fixes (coordinates,
+            // accuracy, provider) are metrics: they live behind the
+            // Ledger tab only — nowhere else in the app (§3).
+            Tab.LOCATION -> renderEventsAsync(palette, "No location records yet — start sensing with location granted and fixes will land here.") {
+                it.topic == "location"
             }
-            Tab.MOTION -> renderEvents(palette, "No motion records yet — start sensing and move the phone.") {
+            Tab.MOTION -> renderEventsAsync(palette, "No motion records yet — start sensing and move the phone.") {
                 it.topic == "state.motion"
             }
-            Tab.DEVICE -> renderEvents(palette, "No device-state records yet — start sensing.") {
+            Tab.DEVICE -> renderEventsAsync(palette, "No device-state records yet — start sensing.") {
                 it.topic.startsWith("state.") && it.topic != "state.motion"
             }
-            Tab.LEDGER -> renderEvents(palette, "The ledger is empty.") { true }
+            Tab.LEDGER -> renderEventsAsync(palette, "The ledger is empty.") { true }
         }
     }
 
     private fun renderAnswers(palette: GlPrefs.Palette) {
-        val (answers, collectors, integrity) = synchronized(app.coreLock) {
-            Triple(app.core.snapshot(), app.core.collectors.all(), app.core.verifyIntegrity())
+        // The snapshot is the questions' CACHED currents — reading
+        // it is cheap and always was. What was never cheap is what
+        // used to ride along with it here: full chain verification
+        // on every 3-second render. That now runs in the background
+        // (see kickIntegrityCheck) and lands when it lands.
+        val (answers, collectors) = synchronized(app.coreLock) {
+            Pair(app.core.snapshot(), app.core.collectors.all())
         }
+        list.removeAllViews()
         for (q in answers) {
             val card = UiKit.cardView(this, palette, 14f)
             card.addView(TextView(this).apply {
-                text = q.text.uppercase()
+                // A quiet caption, in the question's own words — not
+                // a shouted header, no version chip, no settle badge.
+                text = q.text
                 textSize = 11.5f
                 setTextColor(palette.textSecondary)
             })
@@ -210,18 +272,12 @@ class VaultActivity : AppCompatActivity() {
                 setTextColor(palette.textPrimary)
                 setPadding(0, UiKit.dp(this@VaultActivity, 4), 0, 0)
             })
-            val meta = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, UiKit.dp(this@VaultActivity, 8), 0, 0)
-                addView(UiKit.deltaPill(this@VaultActivity, palette, q.current.delta))
-                addView(TextView(this@VaultActivity).apply {
-                    text = "  v${q.current.version} · updated ${shortTime(q.current.evaluatedAt)}"
-                    textSize = 12f
-                    setTextColor(palette.textSecondary)
-                })
-            }
-            card.addView(meta)
+            card.addView(TextView(this).apply {
+                text = "Updated ${shortTime(q.current.evaluatedAt)}"
+                textSize = 11f
+                setTextColor(palette.textSecondary)
+                setPadding(0, UiKit.dp(this@VaultActivity, 6), 0, 0)
+            })
             list.addView(card)
         }
 
@@ -238,42 +294,86 @@ class VaultActivity : AppCompatActivity() {
 
         sectionTitle("Record integrity", palette)
         val integrityCard = UiKit.cardView(this, palette, 14f)
-        val ledgerOk = integrity["ledgerChain"] as? Boolean
-        val auditOk = integrity["auditChain"] as? Boolean
-        integrityCard.addView(bodyText("• Ledger chain: ${verdict(ledgerOk)}", palette))
-        integrityCard.addView(bodyText("• Audit chain: ${verdict(auditOk)}", palette))
-        integrityCard.addView(bodyText("• Events on record: ${integrity["events"]} · audit entries: ${integrity["auditEntries"]}", palette))
+        val current = integrity
+        if (current == null) {
+            integrityCard.addView(bodyText("Checking the chains…", palette))
+        } else {
+            val ledgerOk = current["ledgerChain"] as? Boolean
+            val auditOk = current["auditChain"] as? Boolean
+            integrityCard.addView(bodyText("• Ledger chain: ${verdict(ledgerOk)}", palette))
+            integrityCard.addView(bodyText("• Audit chain: ${verdict(auditOk)}", palette))
+            integrityCard.addView(bodyText("• Events on record: ${current["events"]} · audit entries: ${current["auditEntries"]}", palette))
+        }
         list.addView(integrityCard)
+        kickIntegrityCheck()
     }
 
-    private fun renderEvents(palette: GlPrefs.Palette, emptyText: String, keep: (EvidenceEvent) -> Boolean) {
-        val events = synchronized(app.coreLock) { app.core.ledger.events() }
-            .filter(keep)
-            .asReversed()
-            .take(if (tab == Tab.LEDGER) 120 else 80)
-        if (events.isEmpty()) {
-            emptyLine(emptyText, palette)
-            return
+    /**
+     * Verify both chains OFF the render path, at most once a minute,
+     * and repaint just this screen when the result lands (through
+     * the signature gate: the next refresh picks it up only if the
+     * Answers tab is showing and nothing newer replaced it).
+     */
+    private fun kickIntegrityCheck() {
+        val nowMs = System.currentTimeMillis()
+        if (integrity != null && nowMs - integrityCheckedAtMs < 60_000) return
+        if (integrityCheckedAtMs != 0L && nowMs - integrityCheckedAtMs < 5_000) return
+        integrityCheckedAtMs = nowMs
+        val token = renderToken
+        io.execute {
+            val result = synchronized(app.coreLock) { app.core.verifyIntegrity() }
+            integrity = result
+            integrityCheckedAtMs = System.currentTimeMillis()
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed && token == renderToken && tab == Tab.ANSWERS) {
+                    renderedSignature = ""
+                    render()
+                }
+            }
         }
-        for (e in events) {
-            val card = UiKit.cardView(this, palette, 12f)
-            card.setPadding(
-                UiKit.dp(this, 14), UiKit.dp(this, 10),
-                UiKit.dp(this, 14), UiKit.dp(this, 10),
-            )
-            (card.layoutParams as LinearLayout.LayoutParams).setMargins(0, 0, 0, UiKit.dp(this, 8))
-            card.addView(TextView(this).apply {
-                text = e.claim
-                textSize = 14f
-                setTextColor(palette.textPrimary)
-            })
-            card.addView(TextView(this).apply {
-                text = "${shortTime(e.assertedAt)} · ${e.topic} · ${e.source} · confidence ${(e.confidence * 100).toInt()}%"
-                textSize = 11.5f
-                setTextColor(palette.textSecondary)
-                setPadding(0, UiKit.dp(this@VaultActivity, 3), 0, 0)
-            })
-            list.addView(card)
+    }
+
+    /**
+     * Event tabs: the read (copy + filter + cap) happens on the io
+     * thread; only view construction touches the main thread, and
+     * only for the newest render token.
+     */
+    private fun renderEventsAsync(palette: GlPrefs.Palette, emptyText: String, keep: (EvidenceEvent) -> Boolean) {
+        val token = ++renderToken
+        val cap = if (tab == Tab.LEDGER) 120 else 80
+        io.execute {
+            val events = synchronized(app.coreLock) { app.core.ledger.events() }
+                .filter(keep)
+                .asReversed()
+                .take(cap)
+            runOnUiThread {
+                if (isFinishing || isDestroyed || token != renderToken) return@runOnUiThread
+                list.removeAllViews()
+                if (events.isEmpty()) {
+                    emptyLine(emptyText, palette)
+                    return@runOnUiThread
+                }
+                for (e in events) {
+                    val card = UiKit.cardView(this@VaultActivity, palette, 12f)
+                    card.setPadding(
+                        UiKit.dp(this@VaultActivity, 14), UiKit.dp(this@VaultActivity, 10),
+                        UiKit.dp(this@VaultActivity, 14), UiKit.dp(this@VaultActivity, 10),
+                    )
+                    (card.layoutParams as LinearLayout.LayoutParams).setMargins(0, 0, 0, UiKit.dp(this@VaultActivity, 8))
+                    card.addView(TextView(this@VaultActivity).apply {
+                        text = e.claim
+                        textSize = 14f
+                        setTextColor(palette.textPrimary)
+                    })
+                    card.addView(TextView(this@VaultActivity).apply {
+                        text = "${shortTime(e.assertedAt)} · ${e.topic} · ${e.source} · confidence ${(e.confidence * 100).toInt()}%"
+                        textSize = 11.5f
+                        setTextColor(palette.textSecondary)
+                        setPadding(0, UiKit.dp(this@VaultActivity, 3), 0, 0)
+                    })
+                    list.addView(card)
+                }
+            }
         }
     }
 
@@ -288,19 +388,10 @@ class VaultActivity : AppCompatActivity() {
 
     private fun sectionTitle(text: String, palette: GlPrefs.Palette) {
         list.addView(TextView(this).apply {
-            this.text = text.uppercase()
+            this.text = text
             textSize = 13f
             setTextColor(GlPrefs.accentColor(this@VaultActivity))
             setPadding(0, 36, 0, 6)
-        })
-    }
-
-    private fun line(text: String, palette: GlPrefs.Palette) {
-        list.addView(TextView(this).apply {
-            this.text = text
-            textSize = 14f
-            setTextColor(palette.textPrimary)
-            setPadding(0, 4, 0, 4)
         })
     }
 
@@ -320,13 +411,6 @@ class VaultActivity : AppCompatActivity() {
         null -> "unknown"
     }
 
-    private fun plainDelta(delta: Delta): String = when (delta) {
-        Delta.DISTINGUISHED -> "settled"
-        Delta.EQUIVALENT -> "confirmed"
-        Delta.UNKNOWN -> "not settled yet"
-        Delta.INAPPLICABLE -> "doesn't apply"
-    }
-
     private val timeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, HH:mm:ss")
 
     private fun shortTime(iso: String): String = try {
@@ -334,10 +418,4 @@ class VaultActivity : AppCompatActivity() {
     } catch (e: Exception) {
         iso
     }
-
-    private fun roundedBg(color: Int): android.graphics.drawable.GradientDrawable =
-        android.graphics.drawable.GradientDrawable().apply {
-            setColor(color)
-            cornerRadius = 20f * resources.displayMetrics.density
-        }
 }
