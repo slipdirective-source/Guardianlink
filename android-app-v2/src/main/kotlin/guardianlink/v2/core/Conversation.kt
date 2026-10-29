@@ -39,6 +39,15 @@ class ConversationDeps(
     val now: V2Clock,
     /** The LLM intent reader; null = deterministic floor only. */
     val languagePort: LanguagePort? = null,
+    /**
+     * Live device-control (accessibility) grant state, injected by
+     * the platform layer — the core cannot see the grant, and a
+     * capability answer must report it truthfully rather than from
+     * the record (SMOOTHNESS-ADDENDUM, chat fixtures). Null = the
+     * core is running without a platform (tests); the answer then
+     * names where the state is visible instead of claiming one.
+     */
+    val deviceControlLive: (() -> Boolean)? = null,
 )
 
 private val NEGATION = Regex(
@@ -307,6 +316,86 @@ class Conversation(private val deps: ConversationDeps) {
             return base(
                 Intent.ASK,
                 "Outside minds aren't plugged in yet — Copilot, Claude and Grok can't be reached from inside this app today. They're on the roadmap as participants, under the same rules as everything else here: they can propose, they never act on their own, and nothing moves without your assent. For now, carrying something to them goes through you.",
+                before,
+            )
+        }
+
+        // --- capability: the fingers ("how can u use you finger?") --
+        // A capability question is about the system, never the
+        // record (SMOOTHNESS-ADDENDUM chat fixture, from Caleb's own
+        // 2026-10-27 screenshot). The answer says what the fingers
+        // ARE, whether the grant is live right now, and — when it
+        // is not — the one step that restores it, in plain words.
+        if (Regex("\\bfingers?\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) ||
+            (lower.contains("accessibility") && Regex("\\b(how|what|can|do|use)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) ||
+            Regex("\\bhow\\b[^?]*\\b(tap|type|press)\\b[^?]*\\bscreen\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
+        ) {
+            val live = deps.deviceControlLive?.invoke()
+            val status = when (live) {
+                true -> "Right now the grant is live — the fingers are on, and a commanded tap or type will move."
+                false -> "Right now the grant is off, so the fingers can't move yet. The one step that restores it: Settings → Apps → GuardianLink → the ⋮ menu → \"Allow restricted settings\" — then Settings → Permissions → Device control and turn GuardianLink on. The first step exists because this app was installed directly, and Android resets that lock on every install; skip it and the switch stays greyed out."
+                null -> "Whether the grant is live is the phone's to say: Settings → Permissions → Device control shows it plainly, on or off."
+            }
+            return base(
+                Intent.ASK,
+                "My fingers are this phone's accessibility service. When you command an action and assent to it, they open apps, tap what's on screen, type into fields, scroll, go back or home, and read the screen back to you. They do nothing on their own — every act is proposed first, and its outcome lands in your record either way. $status",
+                before,
+            )
+        }
+
+        // --- capability: web search ("can you search on Google…") --
+        // Same category rule (SMOOTHNESS-ADDENDUM chat fixture):
+        // an unplugged outside service is answered the way the
+        // Copilot question is — plainly not plugged in yet, under
+        // the participant rule — never with the record deflection.
+        if (Regex("\\b(google|the web|the internet|online|browse)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) &&
+            Regex("\\b(search|google|browse|look up|look it up)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)
+        ) {
+            return base(
+                Intent.ASK,
+                "Web search isn't plugged in yet — I can't search Google from inside this app today. Outside services arrive here the way outside minds do: as participants under your rules, proposing rather than acting, and Google isn't connected yet. What I can search right now is your own record — say \"search\" and what you're looking for, and I'll go through everything I've kept.",
+                before,
+            )
+        }
+
+        // --- rails, authored in conversation (§§14–17) --------------
+        // "Set a rail — …" renders ONE rail back exactly (scope,
+        // bound, expiry/revocation, drift terms) as a proposal;
+        // assent binds to that rendering through the ordinary
+        // proposal path. Ambiguous scope earns exactly one
+        // clarifying question — a rail is never guessed into being.
+        if (Regex("\\bset a rail\\b|\\bstanding order\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
+            return authorRail(text, lower, before)
+        }
+        // Killing a rail is a fresh command, executed on his word
+        // and rendered back as it lands (§16).
+        if (Regex("\\b(kill|revoke|remove|drop|end)\\b[^.]*\\brail\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
+            val named = deps.actions.listRails().firstOrNull { r ->
+                r.active && lower.contains(r.target.lowercase())
+            }
+            val rail = named ?: deps.actions.latestActiveRail()
+            if (rail == null) {
+                return base(Intent.CONFIGURE, "No rail is in force right now, so there's nothing to kill.", before)
+            }
+            deps.actions.revokeRail(rail.id)
+            return base(
+                Intent.CONFIGURE,
+                "Rail killed: ${railScopeWords(rail)} no longer runs on its own — it asks first again, every time. The rail stays in the record as revoked; killing it erases nothing.",
+                before,
+            )
+        }
+        // Tightening a rail's bound is the same shape (§16).
+        val tightenMatch = Regex("\\btighten\\b[^.]*\\bto\\b\\s+(weekdays|weekends|mornings?|evenings?|work hours)\\b", RegexOption.IGNORE_CASE).find(lower)
+        if (tightenMatch != null) {
+            val rail = deps.actions.latestActiveRail()
+            if (rail == null) {
+                return base(Intent.CONFIGURE, "No rail is in force right now, so there's nothing to tighten.", before)
+            }
+            val bound = normalizeBound(tightenMatch.groupValues[1])
+            val updated = deps.actions.retimeRail(rail.id, bound)
+            return base(
+                Intent.CONFIGURE,
+                "Rail tightened: ${railScopeWords(rail)} now runs on its own only ${boundPhrase(bound)}. Outside that, it asks first. Everything else about the rail stands as you set it.",
                 before,
             )
         }
@@ -795,10 +884,10 @@ class Conversation(private val deps: ConversationDeps) {
                     requestedBy = "sovereign",
                 ),
             )
-            var reply = "Proposal recorded: ${proposal.actionType} to ${proposal.target}. Policy: ${proposal.policy.wire} — ${proposal.policyReason}"
-            if (proposal.policy != PolicyOutcome.INSUFFICIENTLY_SPECIFIED) {
-                reply += " Note: no execution adapter for ${proposal.actionType} exists in this core, so even with your assent I can propose/draft this but cannot execute it. Nothing has been sent."
-            }
+            val reply =
+                "Noted as a proposal: ${if (isEmail) "an email" else "a message"} to $target. " +
+                    "I can draft it, but I cannot execute it — no way to send that from inside here is built in yet, " +
+                    "so even with your yes, nothing would go out. Nothing has been sent."
             return base(Intent.ACT, reply, before).copy(proposal = proposal)
         }
 
@@ -821,7 +910,7 @@ class Conversation(private val deps: ConversationDeps) {
             )
             return base(
                 Intent.ACT,
-                "Proposal recorded: $actionType on ${impMatch.groupValues[2]}. Policy: ${proposal.policy.wire} — ${proposal.policyReason} Note: no execution adapter for $actionType exists in this core, so I can propose/draft this but cannot execute it. Nothing was done.",
+                "Noted as a proposal: ${impMatch.groupValues[1]} ${impMatch.groupValues[2]}. I can draft it, but I cannot execute it — nothing in this build can do that yet. Nothing was done.",
                 before,
             ).copy(proposal = proposal)
         }
@@ -1027,7 +1116,7 @@ class Conversation(private val deps: ConversationDeps) {
         }
         return base(
             Intent.ACT,
-            "$lead This one needs your say-so first — ${proposal.policyReason} Say \"yes\" and I'll run it; ignore it and nothing happens.",
+            "$lead This one needs your say-so first. Say \"yes\" and I'll run it; ignore it and nothing happens.",
             before,
         ).copy(proposal = proposal)
     }
@@ -1047,6 +1136,118 @@ class Conversation(private val deps: ConversationDeps) {
             "read_screen" -> "Read the current screen and report what's on it?\n$close"
             else -> "${p.expectedEffect}\n$close"
         }
+    }
+
+    /** Plain-words scope for a rail, the way its rendering speaks of it. */
+    private fun railScopeWords(rail: Rail): String = when (rail.actionType) {
+        "send_text" -> "Texts to ${rail.target}"
+        "phone_call" -> "Calls to ${rail.target}"
+        "send_email" -> "Email to ${rail.target}"
+        else -> "${rail.actionType} on ${rail.target}"
+    }
+
+    /** Normalize a spoken bound to the action layer's vocabulary. */
+    private fun normalizeBound(raw: String): String = when (raw.trim().lowercase()) {
+        "morning", "mornings" -> "morning"
+        "evening", "evenings" -> "evening"
+        "afternoon", "afternoons" -> "afternoon"
+        "weekdays" -> "weekdays"
+        "weekends" -> "weekends"
+        "work hours" -> "work hours"
+        else -> raw.trim().lowercase()
+    }
+
+    /** The bound as the rendering says it: "in the morning", "on weekdays". */
+    private fun boundPhrase(bound: String?): String = when (bound) {
+        null -> "at any time"
+        "morning" -> "in the morning"
+        "afternoon" -> "in the afternoon"
+        "evening" -> "in the evening"
+        "weekdays" -> "on weekdays"
+        "weekends" -> "on weekends"
+        "work hours" -> "during work hours"
+        else -> bound
+    }
+
+    /**
+     * Author a rail from the sovereign's own words (§§14–15). The
+     * parse binds only what is actually stated: an action kind
+     * (texts/calls), one recipient (the name after "to"), an
+     * optional time bound, an optional expiry. Anything less earns
+     * one clarifying question. What assent binds to is the rendering
+     * below — it is stored with the rail as its terms and shown
+     * verbatim in Settings and the Agency answer.
+     */
+    private fun authorRail(text: String, lower: String, before: Map<String, Int>): ConversationResult {
+        val kindWord: String? = when {
+            Regex("\\b(texts?|messages?)\\b").containsMatchIn(lower) -> "texts"
+            Regex("\\bcalls?\\b").containsMatchIn(lower) -> "calls"
+            else -> null
+        }
+        val nameMatch = Regex("\\bto\\s+([A-Za-z]+)(?:\\s+([A-Z][a-z]+))?").find(text)
+        val recipient = nameMatch?.let { m ->
+            listOf(m.groupValues[1]) + listOfNotNull(m.groupValues.getOrNull(2)?.takeIf { it.isNotEmpty() })
+        }?.joinToString(" ")?.trim()
+        if (kindWord == null || recipient.isNullOrBlank()) {
+            return clarify(
+                Intent.CLARIFY,
+                "I can set that rail — I need it bound exactly before it's rendered for your assent: who are the texts to, and when should they just go (in the morning, on weekdays, at any time)? Nothing is set yet.",
+                before,
+                "Who is the rail for, and when does it apply?",
+            )
+        }
+        val bound = when {
+            Regex("\\bmorning\\b").containsMatchIn(lower) -> "morning"
+            Regex("\\bafternoon\\b").containsMatchIn(lower) -> "afternoon"
+            Regex("\\bevening\\b").containsMatchIn(lower) -> "evening"
+            Regex("\\bweekdays?\\b").containsMatchIn(lower) -> "weekdays"
+            Regex("\\bweekends?\\b").containsMatchIn(lower) -> "weekends"
+            Regex("\\bwork hours\\b").containsMatchIn(lower) -> "work hours"
+            else -> null
+        }
+        val expiresAt = when {
+            Regex("\\bfor a week\\b").containsMatchIn(lower) ->
+                IsoTime.format(deps.now.now().plusSeconds(7 * 24 * 3600))
+            Regex("\\bfor a month\\b").containsMatchIn(lower) ->
+                IsoTime.format(deps.now.now().plusSeconds(30L * 24 * 3600))
+            else -> null
+        }
+        val actionType = if (kindWord == "calls") "phone_call" else "send_text"
+        val scopeWords = if (actionType == "phone_call") "Calls to $recipient" else "Texts to $recipient"
+        val actionVerb = if (actionType == "phone_call") "place" else "send"
+        val terms = "$scopeWords $actionVerb without asking first, ${boundPhrase(bound)}" +
+            (if (expiresAt != null) ", until $expiresAt" else ", until you revoke it") + "."
+        val expiryLine = if (expiresAt != null) {
+            "\u2022 It ends on $expiresAt unless you kill it sooner \u2014 say \"kill that rail\"."
+        } else {
+            "\u2022 It stays in force until you revoke it \u2014 say \"kill that rail\" and it's gone."
+        }
+        val rendering = "Here's the rail, exactly as it would stand \u2014 your yes binds to this rendering and nothing else:\n" +
+            "\u2022 $scopeWords $actionVerb without asking you first.\n" +
+            "\u2022 When it applies: ${boundPhrase(bound)}. Outside that, it asks first, as now.\n" +
+            "$expiryLine\n" +
+            "\u2022 If anything drifts \u2014 a different recipient, a different kind of action \u2014 it stops and asks. The rail never stretches itself.\n" +
+            "Say yes to set it, or tell me what to change."
+        val proposal = deps.actions.propose(
+            ProposalInput(
+                actionType = "set_rail",
+                target = recipient,
+                parameters = mapOf(
+                    "actionType" to actionType,
+                    "target" to recipient,
+                    "envelope" to emptyMap<String, Double>(),
+                    "timeBound" to bound,
+                    "expiresAt" to expiresAt,
+                    "terms" to terms,
+                ),
+                expectedEffect = "Rail set: $terms",
+                reversibility = Reversibility.REVERSIBLE,
+                consequenceClass = ConsequenceClass.LOCAL,
+                requiredAuthority = RequiredAuthority.FRESH_ASSENT,
+                requestedBy = "sovereign",
+            ),
+        )
+        return base(Intent.ACT, rendering, before).copy(proposal = proposal)
     }
 
     private fun searchReply(about: String, intent: Intent, before: Map<String, Int>): ConversationResult {
