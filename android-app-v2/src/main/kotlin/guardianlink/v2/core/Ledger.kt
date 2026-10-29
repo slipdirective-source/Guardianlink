@@ -82,15 +82,38 @@ class Ledger(
     fun get(id: String): EvidenceEvent? = allEvents().firstOrNull { it.id == id }
 
     /** True when some later event retracts the given event. Retracted events stay in the ledger. */
-    fun isRetracted(id: String): Boolean =
-        allEvents().any { e -> e.relations.any { r -> r.type == RelationType.RETRACTS && r.targetId == id } }
+    fun isRetracted(id: String): Boolean = retractedIds().contains(id)
 
-    fun isSuperseded(id: String): Boolean =
-        allEvents().any { e -> e.relations.any { r -> r.type == RelationType.SUPERSEDES && r.targetId == id } }
+    fun isSuperseded(id: String): Boolean = supersededIds().contains(id)
 
-    /** Events still in force: not retracted, not superseded. */
-    fun liveEvents(): List<EvidenceEvent> =
-        allEvents().filter { e -> !isRetracted(e.id) && !isSuperseded(e.id) }
+    /**
+     * Ids retracted by any event, computed in ONE pass. The naive
+     * per-event scan made every liveEvents() call O(n^2) in ledger
+     * size — with weeks of collector data that is the arithmetic
+     * that froze the Vault (SMOOTHNESS-ADDENDUM named defect): the
+     * render path recomputed liveness per event, per event.
+     */
+    fun retractedIds(): Set<String> {
+        val out = HashSet<String>()
+        for (e in chain) for (r in e.relations) if (r.type == RelationType.RETRACTS) out.add(r.targetId)
+        for (e in foreign.values) for (r in e.relations) if (r.type == RelationType.RETRACTS) out.add(r.targetId)
+        return out
+    }
+
+    /** Ids superseded by any event, computed in ONE pass (see [retractedIds]). */
+    fun supersededIds(): Set<String> {
+        val out = HashSet<String>()
+        for (e in chain) for (r in e.relations) if (r.type == RelationType.SUPERSEDES) out.add(r.targetId)
+        for (e in foreign.values) for (r in e.relations) if (r.type == RelationType.SUPERSEDES) out.add(r.targetId)
+        return out
+    }
+
+    /** Events still in force: not retracted, not superseded. One pass over the relation sets. */
+    fun liveEvents(): List<EvidenceEvent> {
+        val retracted = retractedIds()
+        val superseded = supersededIds()
+        return allEvents().filter { e -> !retracted.contains(e.id) && !superseded.contains(e.id) }
+    }
 
     fun headHash(): String = if (chain.isNotEmpty()) chain[chain.size - 1].hash else GENESIS_HASH
 
