@@ -47,6 +47,22 @@ data class Rail(
     val createdBy: String,
     val createdAt: String,
     /**
+     * Conversational-rail time bound in plain words ("morning",
+     * "weekdays", "work hours") — when in the sovereign's day the
+     * rail covers (SMOOTHNESS-ADDENDUM §15: a rail is rendered with
+     * its bounds and assent binds to the rendering). Null = no time
+     * bound; the rail covers at any hour.
+     */
+    val timeBound: String? = null,
+    /** ISO instant after which the rail covers nothing. Null = until revoked. */
+    val expiresAt: String? = null,
+    /**
+     * The exact rendering the sovereign assented to (scope, bounds,
+     * expiry, suspension terms), kept with the rail so Settings and
+     * the Agency answer can show the rail as it was bound.
+     */
+    val terms: String? = null,
+    /**
      * Gate 3 envelope commitments (ZK-GATE3-DESIGN §2.2/§5), computed
      * at commit time through the ZK bridge when one is available.
      * Null = this rail carries no commitments (committed without the
@@ -204,6 +220,9 @@ class ActionLayer(private val deps: ActionDeps) {
         target: String,
         envelope: Map<String, Double>,
         createdBy: String,
+        timeBound: String? = null,
+        expiresAt: String? = null,
+        terms: String? = null,
     ): Rail {
         railSeq += 1
         val railId = "rail-$railSeq"
@@ -220,6 +239,9 @@ class ActionLayer(private val deps: ActionDeps) {
             createdBy = createdBy,
             createdAt = IsoTime.format(deps.now.now()),
             zk = zk,
+            timeBound = timeBound,
+            expiresAt = expiresAt,
+            terms = terms,
         )
         rails.add(rail)
         deps.audit.record(createdBy, "rail_created", mapOf("railId" to rail.id, "actionType" to actionType, "target" to target, "envelope" to envelope))
@@ -227,7 +249,107 @@ class ActionLayer(private val deps: ActionDeps) {
     }
 
     private fun railFor(actionType: String, target: String): Rail? =
-        rails.firstOrNull { r -> r.active && r.actionType == actionType && (r.target == target || r.target == "*") }
+        rails.firstOrNull { r ->
+            r.active && r.actionType == actionType && (r.target == target || r.target == "*") && coversNow(r)
+        }
+
+    /**
+     * Whether a rail covers a proposal RIGHT NOW: its expiry has not
+     * passed and the moment sits inside its time bound. A rail that
+     * does not cover simply does not apply — the proposal falls back
+     * to fresh assent, it is not drift and it is not a refusal
+     * (SMOOTHNESS-ADDENDUM §15: outside the bound, it asks, as now).
+     * An unrecognized bound word never silently narrows coverage:
+     * the bound is named in the rail's terms, and unknown words are
+     * treated as unbounded rather than guessed at.
+     */
+    private fun coversNow(r: Rail): Boolean {
+        val nowInstant = deps.now.now()
+        if (r.expiresAt != null) {
+            val expiry = try {
+                java.time.Instant.parse(r.expiresAt)
+            } catch (e: Exception) {
+                null
+            }
+            if (expiry != null && !nowInstant.isBefore(expiry)) return false
+        }
+        val bound = r.timeBound?.trim()?.lowercase() ?: return true
+        if (bound.isEmpty()) return true
+        val local = nowInstant.atZone(java.time.ZoneId.systemDefault())
+        val hour = local.hour
+        val weekday = local.dayOfWeek.value // 1 = Monday .. 7 = Sunday
+        return when (bound) {
+            "morning" -> hour < 12
+            "afternoon" -> hour in 12..16
+            "evening" -> hour >= 17
+            "weekdays" -> weekday in 1..5
+            "weekends" -> weekday >= 6
+            "work hours" -> weekday in 1..5 && hour in 8..17
+            else -> true
+        }
+    }
+
+    /**
+     * Revoke a rail conversationally (SMOOTHNESS-ADDENDUM §16): the
+     * rail stays on record, inactive — revocation is a state, not an
+     * erasure. Returns the revoked rail, or null if the id is unknown
+     * or the rail was already inactive.
+     */
+    fun revokeRail(id: String): Rail? {
+        val idx = rails.indexOfFirst { it.id == id }
+        if (idx < 0 || !rails[idx].active) return null
+        val revoked = rails[idx].copy(active = false)
+        rails[idx] = revoked
+        deps.audit.record("sovereign", "rail_revoked", mapOf("railId" to id, "actionType" to revoked.actionType, "target" to revoked.target))
+        return revoked
+    }
+
+    /** Re-bound a rail's time window conversationally (§16: "tighten it to weekdays"). */
+    fun retimeRail(id: String, timeBound: String?): Rail? {
+        val idx = rails.indexOfFirst { it.id == id }
+        if (idx < 0 || !rails[idx].active) return null
+        val updated = rails[idx].copy(timeBound = timeBound)
+        rails[idx] = updated
+        deps.audit.record("sovereign", "rail_retimed", mapOf("railId" to id, "timeBound" to timeBound))
+        return updated
+    }
+
+    /** The most recently created rail still in force, if any — what "that rail" points at. */
+    fun latestActiveRail(): Rail? = rails.lastOrNull { it.active }
+
+    /**
+     * The Agency answer's raw material (SMOOTHNESS-ADDENDUM §4):
+     * what is OPEN to the sovereign — rails in force, in the words
+     * he assented to, and recent counterparties as options. Never
+     * the action log: what already happened is History's material.
+     */
+    fun agencyOptions(): List<String> {
+        val out = mutableListOf<String>()
+        for (r in rails) {
+            if (!r.active) continue
+            out.add(
+                r.terms ?: "Standing rail: ${railScopeWords(r.actionType, r.target)} runs without asking" +
+                    (r.timeBound?.let { ", $it" } ?: "") + ".",
+            )
+        }
+        val seen = LinkedHashSet<String>()
+        val executedDevice = proposals.values.filter { p ->
+            p.status == ProposalStatus.EXECUTED && DEVICE_ACTIONS.contains(p.actionType)
+        }
+        for (p in executedDevice.asReversed()) {
+            if (!seen.add(p.actionType + "|" + p.target)) continue
+            if (seen.size > 3) break
+            out.add(
+                when (p.actionType) {
+                    "phone_call" -> "You can call ${p.target} back."
+                    "send_text" -> "You can text ${p.target}."
+                    "send_email" -> "You can email ${p.target}."
+                    else -> "You can run that on ${p.target} again."
+                },
+            )
+        }
+        return out
+    }
 
     /**
      * Compute a rail's Gate 3 record: one descriptor + quantized
@@ -265,10 +387,10 @@ class ActionLayer(private val deps: ActionDeps) {
 
     fun evaluate(input: ProposalInput): Pair<PolicyOutcome, String> {
         if (DENIED_ACTIONS.contains(input.actionType)) {
-            return Pair(PolicyOutcome.DENIED, "${input.actionType} violates a hard constraint; no authority path exists inside the harness.")
+            return Pair(PolicyOutcome.DENIED, "that is one of the few things this system will never do, under any approval — it would break the record everything else stands on.")
         }
         if (input.target.isBlank() || input.target == "unspecified") {
-            return Pair(PolicyOutcome.INSUFFICIENTLY_SPECIFIED, "No target specified; the action cannot be bound to an exact object.")
+            return Pair(PolicyOutcome.INSUFFICIENTLY_SPECIFIED, "it doesn't name exactly what it would act on, so it can't be tied to one exact thing.")
         }
         val rail = railFor(input.actionType, input.target)
         if (rail != null) {
@@ -277,14 +399,14 @@ class ActionLayer(private val deps: ActionDeps) {
                 if (v is Number && v.toDouble() > ceiling) {
                     return Pair(
                         PolicyOutcome.DRIFT_FLAGGED,
-                        "Parameter $key=${renderNumber(v)} exceeds the committed rail envelope ($key <= ${renderNumber(ceiling)}). " +
-                            "Execution suspended for sovereign review; the system does not improvise past a drift flag.",
+                        "it goes past the limit you set on the rail ($key is ${renderNumber(v)}; you set $key at no more than ${renderNumber(ceiling)}). " +
+                            "It stops here for your review — a rail is never stretched on my own say-so.",
                     )
                 }
             }
             return Pair(PolicyOutcome.EXECUTABLE_UNDER_RAIL, "Covered by ${rail.id}.")
         }
-        return Pair(PolicyOutcome.NEEDS_FRESH_ASSENT, "No rail or standing order covers this action; fresh sovereign assent is required.")
+        return Pair(PolicyOutcome.NEEDS_FRESH_ASSENT, "no rail or standing order covers it, so it needs your fresh say-so.")
     }
 
     fun propose(input: ProposalInput): ActionProposal {
@@ -377,11 +499,11 @@ class ActionLayer(private val deps: ActionDeps) {
         if (policy == PolicyOutcome.DENIED || policy == PolicyOutcome.DRIFT_FLAGGED || policy == PolicyOutcome.INSUFFICIENTLY_SPECIFIED) {
             p.status = ProposalStatus.REFUSED
             deps.audit.record(actor, "execution_refused", mapOf("proposalId" to proposalId, "policy" to policy.wire, "reason" to reason))
-            return ExecuteResult(executed = false, message = "Refused (${policy.wire}): $reason", outcomeStatus = OutcomeStatus.CANNOT_EXECUTE)
+            return ExecuteResult(executed = false, message = "Refused: $reason", outcomeStatus = OutcomeStatus.CANNOT_EXECUTE)
         }
         if (policy == PolicyOutcome.NEEDS_FRESH_ASSENT && !hasAssent(proposalId)) {
             deps.audit.record(actor, "execution_blocked_no_assent", mapOf("proposalId" to proposalId))
-            return ExecuteResult(executed = false, message = "Blocked: this action requires fresh sovereign assent and none is recorded for this proposal.")
+            return ExecuteResult(executed = false, message = "It didn't run — this action needs your fresh say-so, and none is recorded for it.")
         }
         val hasAdapter = LOCAL_ADAPTERS.contains(p.actionType) ||
             (DEVICE_ACTIONS.contains(p.actionType) && deps.deviceAction != null)
@@ -390,7 +512,7 @@ class ActionLayer(private val deps: ActionDeps) {
             deps.audit.record(actor, "execution_refused_no_adapter", mapOf("proposalId" to proposalId, "actionType" to p.actionType))
             return ExecuteResult(
                 executed = false,
-                message = "Can propose/draft, cannot execute: no execution adapter is implemented for \"${p.actionType}\" in this core. Nothing was executed and no execution was recorded.",
+                message = "I can draft that, but I cannot execute it — nothing in this build can carry it out yet. Nothing was executed, and nothing was recorded as done.",
                 outcomeStatus = OutcomeStatus.CANNOT_EXECUTE,
             )
         }
@@ -471,6 +593,9 @@ class ActionLayer(private val deps: ActionDeps) {
                     (p.parameters["target"] as? String) ?: p.target,
                     envelope,
                     p.requestedBy,
+                    timeBound = p.parameters["timeBound"] as? String,
+                    expiresAt = p.parameters["expiresAt"] as? String,
+                    terms = p.parameters["terms"] as? String,
                 )
                 mapOf("railId" to rail.id)
             }
@@ -491,6 +616,13 @@ class ActionLayer(private val deps: ActionDeps) {
             }
             else -> throw IllegalStateException("no adapter for ${p.actionType}")
         }
+    }
+
+    private fun railScopeWords(actionType: String, target: String): String = when (actionType) {
+        "send_text" -> "texts to $target"
+        "phone_call" -> "calls to $target"
+        "send_email" -> "email to $target"
+        else -> "$actionType on $target"
     }
 
     private fun renderNumber(v: Number): String {
