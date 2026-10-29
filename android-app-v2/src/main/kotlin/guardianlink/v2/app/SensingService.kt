@@ -60,7 +60,13 @@ class SensingService : Service() {
             // Wake settings changed while sensing runs: reconcile
             // the ear with the new truth instead of waiting for a
             // sensing restart that may never come (the silent-ear
-            // failure of 2026-10-25).
+            // failure of 2026-10-25). Re-promoting matters: the
+            // microphone foreground type is only in the declared set
+            // when wake was ready at promotion time, and Android 14+
+            // denies mic access to a foreground service that did not
+            // declare it — wake enabled after the fact could never
+            // start until the service restarted.
+            promoteToForeground()
             WakeWordEngine.stop()
             maybeStartWakeWord()
             return START_STICKY
