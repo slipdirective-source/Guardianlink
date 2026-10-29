@@ -40,6 +40,10 @@ object WakeWordEngine {
     private var running = false
     private var worker: Thread? = null
 
+    /** The live microphone handle, so [stop] can release it at once. */
+    @Volatile
+    private var activeRecord: AudioRecord? = null
+
     /** Live truth for the Settings status line — never prefs-derived. */
     @Volatile
     var isRunning: Boolean = false
@@ -121,6 +125,7 @@ object WakeWordEngine {
                     throw IllegalStateException("the microphone didn't open")
                 }
                 record.startRecording()
+                activeRecord = record
                 val buffer = ByteArray(4096)
                 var deadReads = 0
                 while (running) {
@@ -141,6 +146,16 @@ object WakeWordEngine {
                             Log.i(TAG, "wake phrase heard")
                             onWake()
                         }
+                    } else {
+                        // Partial results carry the phrase as soon
+                        // as it is spoken; waiting for the final
+                        // result adds a perceptible gap (§11: wake
+                        // inside a beat).
+                        val partial = (JsonParser.parse(recognizer.partialResult) as? Map<*, *>)?.get("partial") as? String
+                        if (partial != null && partial.trim() == phrase) {
+                            Log.i(TAG, "wake phrase heard (partial)")
+                            onWake()
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -148,6 +163,7 @@ object WakeWordEngine {
                 Log.w(TAG, "wake loop ended", e)
             } finally {
                 isRunning = false
+                if (activeRecord === record) activeRecord = null
                 try { record?.stop() } catch (e: Exception) { /* already stopped */ }
                 record?.release()
                 recognizer?.close()
@@ -159,6 +175,19 @@ object WakeWordEngine {
     fun stop() {
         running = false
         isRunning = false
+        // Release the microphone NOW, not whenever the read loop
+        // happens to notice: a stopped AudioRecord unblocks the
+        // pending read, and a still-held mic is exactly what starved
+        // the dictation path when both wanted the ear.
+        val rec = activeRecord
+        activeRecord = null
+        if (rec != null) {
+            try { rec.stop() } catch (e: Exception) { /* already stopped */ }
+        }
+        val w = worker
         worker = null
+        if (w != null && w !== Thread.currentThread()) {
+            try { w.join(600) } catch (e: InterruptedException) { Thread.currentThread().interrupt() }
+        }
     }
 }
