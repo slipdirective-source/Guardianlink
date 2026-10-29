@@ -247,6 +247,32 @@ class MainActivity : AppCompatActivity() {
 
     private var recognizer: SpeechRecognizer? = null
 
+    /** True while dictation holds the microphone the wake ear was using. */
+    private var wakePausedForDictation = false
+
+    /**
+     * The wake ear holds the microphone continuously; dictation
+     * needs the same ear. Pause the ear before dictation and hand
+     * it back after — before this, the two fought and dictation
+     * lost, silently, every time both were on.
+     */
+    private fun pauseWakeForDictation() {
+        wakePausedForDictation = WakeWordEngine.isRunning
+        if (wakePausedForDictation) WakeWordEngine.stop()
+    }
+
+    private fun resumeWakeAfterDictation() {
+        if (!wakePausedForDictation) return
+        wakePausedForDictation = false
+        if (!SensingService.isRunning) return
+        WakeWordEngine.start(this) {
+            runOnUiThread {
+                addBubble("Heard you — I'm listening.", fromUser = false)
+                startVoiceCommand()
+            }
+        }
+    }
+
     /**
      * Voice in, through the platform's speech engine, out through the
      * exact pipeline typed text takes: the words land in the input
@@ -267,6 +293,7 @@ class MainActivity : AppCompatActivity() {
             addBubble("This phone has no speech recognition engine available, so voice input can't run here.", fromUser = false)
             return
         }
+        pauseWakeForDictation()
         recognizer?.destroy()
         val sr = SpeechRecognizer.createSpeechRecognizer(this)
         recognizer = sr
@@ -277,6 +304,9 @@ class MainActivity : AppCompatActivity() {
                     ?.firstOrNull()
                     ?.trim()
                     .orEmpty()
+                sr.destroy()
+                if (recognizer === sr) recognizer = null
+                resumeWakeAfterDictation()
                 if (text.isNotEmpty()) {
                     input.setText(text)
                     submitConversation()
@@ -293,8 +323,20 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onError(error: Int) {
-                if (error != SpeechRecognizer.ERROR_NO_MATCH) {
-                    addBubble("Voice input stopped (engine error $error). Typing still works.", fromUser = false)
+                sr.destroy()
+                if (recognizer === sr) recognizer = null
+                resumeWakeAfterDictation()
+                when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                        // Quiet rooms and pauses are not failures.
+                    }
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                        addBubble(
+                            "Voice is blocked by the microphone grant. It's under Settings → Permissions — " +
+                                "turn on Microphone and I'll take spoken questions and commands.",
+                            fromUser = false,
+                        )
+                    else -> addBubble("Voice input stopped (engine error $error). Typing still works.", fromUser = false)
                 }
             }
 
@@ -308,13 +350,21 @@ class MainActivity : AppCompatActivity() {
         val listenIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            // NOT EXTRA_PREFER_OFFLINE: forcing offline makes the
+            // platform engine refuse outright on phones without a
+            // downloaded offline language pack — dictation dead on
+            // arrival, with nothing on the surface saying why. The
+            // engine's own default (on-device where it exists) is
+            // the honest setting.
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Ask GuardianLink, or give a command")
         }
         try {
             sr.startListening(listenIntent)
             addBubble("Listening…", fromUser = false)
         } catch (e: Exception) {
+            sr.destroy()
+            if (recognizer === sr) recognizer = null
+            resumeWakeAfterDictation()
             addBubble("Voice input couldn't start: ${e.message}", fromUser = false)
         }
     }
