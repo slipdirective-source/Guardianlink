@@ -1,6 +1,7 @@
 package guardianlink.v2.app
 
 import android.Manifest
+import android.app.AlertDialog
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
@@ -321,13 +322,18 @@ class PermissionsActivity : AppCompatActivity() {
             why = "The accessibility grant that lets GuardianLink act inside other apps when you command it: open apps, tap, type, scroll, go back — each act proposed first, executed only on your assent, its outcome recorded. The service does nothing on its own.",
             granted = a11yGranted,
             statusText = if (a11yGranted) "On — commanded actions can reach inside other apps." else "Off — GuardianLink can sense and message, but has no fingers.",
-            actionLabel = if (a11yGranted) null else "Open Settings",
+            actionLabel = if (a11yGranted) null else "Restore it",
             action = if (a11yGranted) null else ({
-                try {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                } catch (e: Exception) {
-                    openAppDetails()
-                }
+                showRestrictedSettingsGuide(
+                    grantName = "Device control",
+                    openGrant = {
+                        try {
+                            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        } catch (e: Exception) {
+                            openAppDetails()
+                        }
+                    },
+                )
             }),
         )
 
@@ -339,13 +345,18 @@ class PermissionsActivity : AppCompatActivity() {
             why = "Lets GuardianLink read the mail and message notifications your own apps post — the context those apps surface, without reaching into the apps themselves. Governed by the notifications collector: pause it and the stream stops.",
             granted = notifAccess,
             statusText = if (notifAccess) "On — mail/message notifications enter your record." else "Off — no notification context is collected.",
-            actionLabel = if (notifAccess) null else "Open Settings",
+            actionLabel = if (notifAccess) null else "Restore it",
             action = if (notifAccess) null else ({
-                try {
-                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                } catch (e: Exception) {
-                    openAppDetails()
-                }
+                showRestrictedSettingsGuide(
+                    grantName = "Notification access",
+                    openGrant = {
+                        try {
+                            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                        } catch (e: Exception) {
+                            openAppDetails()
+                        }
+                    },
+                )
             }),
         )
 
@@ -405,6 +416,30 @@ class PermissionsActivity : AppCompatActivity() {
         mode == AppOpsManager.MODE_ALLOWED
     } catch (e: Exception) {
         false
+    }
+
+    /**
+     * The restricted-settings walk, in plain words (§12: platform
+     * friction is designed around, not excused). GuardianLink is
+     * installed directly, so after every install Android locks the
+     * special grants until the sovereign lifts the lock on the App
+     * info page — and the grant switches themselves stay greyed
+     * out, which reads exactly like a dead app. This dialog names
+     * the two steps, in order, and opens each place for him.
+     */
+    private fun showRestrictedSettingsGuide(grantName: String, openGrant: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle("Restoring $grantName")
+            .setMessage(
+                "Because GuardianLink was installed directly — not from the Play Store — Android locks this grant after every install. Two steps, in order:\n\n" +
+                    "1. Tap \"Open App info\", then the ⋮ menu at the top right, then \"Allow restricted settings\".\n\n" +
+                    "2. Come back here and tap \"Open the grant\" — the GuardianLink switch will now move. Turn it on.\n\n" +
+                    "Skip step 1 and the switch in step 2 stays greyed out. That's the lock, not a fault.",
+            )
+            .setPositiveButton("Open App info") { _, _ -> openAppDetails() }
+            .setNeutralButton("Open the grant") { _, _ -> openGrant() }
+            .setNegativeButton("Later", null)
+            .show()
     }
 
     private fun openAppDetails() {
