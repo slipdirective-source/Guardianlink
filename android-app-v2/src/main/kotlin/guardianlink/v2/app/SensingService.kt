@@ -322,7 +322,7 @@ class SensingService : Service() {
             NotificationChannel(CHANNEL_ID, "GuardianLink sensing", NotificationManager.IMPORTANCE_LOW),
         )
         val notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("GuardianLink v0.2")
+            .setContentTitle("GuardianLink")
             .setContentText("Sensing active: device state, location, motion (each as permitted). Collection is visible and revocable in the app.")
             .setSmallIcon(android.R.drawable.sym_def_app_icon)
             .build()
