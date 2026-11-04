@@ -1,6 +1,7 @@
 package guardianlink.v2.core
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -128,7 +129,8 @@ class DeviceActionTest {
         assertTrue(r.reply.contains("\"I love you\""), "exact body shown: ${r.reply}")
         assertTrue(!r.reply.contains("policy") && !r.reply.contains("rail"), "no boilerplate in the prompt: ${r.reply}")
         val no = h.say("no")
-        assertTrue(no.reply.contains("Left unexecuted"), "no drops it cleanly: ${no.reply}")
+        assertTrue(no.reply.contains("Left undone"), "no drops it cleanly: ${no.reply}")
+        assertFalse(no.reply.contains("send_text"), "no wire name on the surface: ${no.reply}")
     }
 
     @Test
