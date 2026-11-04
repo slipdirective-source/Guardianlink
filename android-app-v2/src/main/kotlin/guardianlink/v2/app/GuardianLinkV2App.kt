@@ -437,13 +437,13 @@ class GuardianLinkV2App : Application() {
             bridge = GovernedActionBridge(concierge, ceremony, zkWiring)
             engineReady = true
             val zkPosture = if (NativeZkBridge.isAvailable()) {
-                "Gate 3 is LIVE: governed submissions carry a Bulletproofs envelope proof (Rust glzk bridge) and halt there if it does not verify."
+                "Security proofs are on: every governed action carries an on-device proof and stops if the proof does not check out."
             } else {
-                "Gate 3's native proof library (libglzk) is NOT loaded in this build: governed submissions halt at Gate 3, named, until the .so ships in the APK."
+                "The on-device proof library is not loaded in this build: governed actions stop at the proof check, and say so, until it ships in the app."
             }
-            engineStatus = "Engine: up — persistent key custody, policy ports live from core state, ceremony wired. " +
+            engineStatus = "Engine: up — your keys are kept on this phone, the checks read your live record, and governed actions are wired. " +
                 zkPosture + " " +
-                "Voice assent is not enrolled, so Gate 7 voice evidence is absent until enrollment lands."
+                "Voice assent is not enrolled yet, so actions that need your voice stop at that check until enrollment lands."
             Log.i(TAG, engineStatus)
         } catch (t: Throwable) {
             // Fail-closed overall: without the engine there is no governed
