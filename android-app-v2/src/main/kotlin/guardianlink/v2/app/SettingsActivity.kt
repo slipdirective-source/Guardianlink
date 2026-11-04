@@ -48,14 +48,6 @@ class SettingsActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(8))
         }
-        // Build stamp: which build is actually running, readable at
-        // a glance — install confusion costs more than the line.
-        root.addView(TextView(this).apply {
-            text = "Build: 2026-10-28 · Smoothness build"
-            textSize = 12f
-            setTextColor(GlPrefs.palette(this@SettingsActivity).textSecondary)
-            setPadding(0, 0, 0, dp(10))
-        })
         val scroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -108,6 +100,18 @@ class SettingsActivity : AppCompatActivity() {
         val palette = GlPrefs.palette(this)
         root.setBackgroundColor(palette.pageBg)
         root.removeAllViews()
+
+        // Build stamp: which build is actually running, readable at
+        // a glance — install confusion costs more than the line. It
+        // is added here, inside build(), because build() rebuilds
+        // this list from empty on every resume; a stamp added in
+        // onCreate was wiped before it was ever seen.
+        root.addView(TextView(this).apply {
+            text = "Build: 2026-11-04 · Smoothness pass 2"
+            textSize = 12f
+            setTextColor(palette.textSecondary)
+            setPadding(0, 0, 0, dp(10))
+        })
 
         // ---------------- Appearance ----------------
         section("Appearance")
@@ -183,7 +187,7 @@ class SettingsActivity : AppCompatActivity() {
 
         // ---------------- Data ----------------
         section("Data")
-        navCard("Copy diagnostics", "Version, engine posture, key and Gate 3 state — for pasting anywhere.") {
+        navCard("Copy diagnostics", "App version, engine state, and security-check state — for pasting anywhere.") {
             copyDiagnostics()
         }
         navCard("Erase everything", "Deletes the encrypted state, audit anchors, and clock file, then restarts empty. No undo.", danger = true) {
@@ -201,7 +205,7 @@ class SettingsActivity : AppCompatActivity() {
         about.addView(bodyLine("GuardianLink v0.2 · version $version", palette))
         about.addView(bodyLine(app.engineStatus, palette))
         val keyId = synchronized(app.coreLock) { app.core.operatorKeyId }
-        about.addView(bodyLine("Operator key: ${keyId?.take(16) ?: "not bound yet"}…", palette))
+        about.addView(bodyLine("Signing key: ${keyId?.take(16) ?: "not set up yet"}…", palette))
         root.addView(about)
     }
 
@@ -671,7 +675,7 @@ class SettingsActivity : AppCompatActivity() {
         val phrase = WakePrefs.phrase(this)
         val enabled = WakePrefs.enabled(this)
         val modelReady = WakeWordEngine.modelInstalled(this)
-        card.addView(bodyLine("Say \"$phrase\" and GuardianLink opens listening — the phrase is spotted on this phone (Vosk, offline); no audio leaves the device and nothing is recorded before the phrase. You can change the phrase to any handle you like.", palette))
+        card.addView(bodyLine("Say \"$phrase\" and GuardianLink opens listening — the phrase is spotted on this phone, offline; no audio leaves the device and nothing is recorded before the phrase. You can change the phrase to any handle you like.", palette))
         val micGranted = androidx.core.content.ContextCompat.checkSelfPermission(
             this, android.Manifest.permission.RECORD_AUDIO,
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -947,7 +951,7 @@ class SettingsActivity : AppCompatActivity() {
             appendLine("Persistence: ${app.persistenceStatus}")
             appendLine("Standing answers: $answers")
             appendLine("Operator key: ${keyId ?: "unbound"}")
-            appendLine("Gate 3 native bridge: ${if (NativeZkBridge.isAvailable()) "available" else "unavailable"}")
+            appendLine("On-device security proofs: ${if (NativeZkBridge.isAvailable()) "available" else "unavailable"}")
         }
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("GuardianLink diagnostics", text))
