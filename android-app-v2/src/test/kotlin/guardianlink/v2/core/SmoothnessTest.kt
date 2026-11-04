@@ -261,6 +261,16 @@ class SmoothnessTest {
     }
 
     @Test
+    fun `language - declining a proposal names it in plain words, never its wire name`() {
+        val (h, _) = makeHarness()
+        h.say("send Shannon a text telling her I love her")
+        val no = h.say("no")
+        assertTrue(no.reply.contains("the text to Shannon"), "the dropped action, in plain words: ${no.reply}")
+        assertFalse(no.reply.contains("send_text"), "no wire name on the surface: ${no.reply}")
+        assertForwardFacing(no.reply)
+    }
+
+    @Test
     fun `language - an unbuilt imperative is plain words too`() {
         val (h, _) = makeHarness()
         val r = h.say("unlock the door")
