@@ -366,7 +366,15 @@ class VaultActivity : AppCompatActivity() {
                         setTextColor(palette.textPrimary)
                     })
                     card.addView(TextView(this@VaultActivity).apply {
-                        text = "${shortTime(e.assertedAt)} · ${e.topic} · ${e.source} · confidence ${(e.confidence * 100).toInt()}%"
+                        // Plain tabs carry the time and nothing
+                        // else — topic names, sources and confidence
+                        // figures are machinery. The Ledger tab is
+                        // the audit depth; there the full line stays.
+                        text = if (tab == Tab.LEDGER) {
+                            "${shortTime(e.assertedAt)} · ${e.topic} · ${e.source} · confidence ${(e.confidence * 100).toInt()}%"
+                        } else {
+                            shortTime(e.assertedAt)
+                        }
                         textSize = 11.5f
                         setTextColor(palette.textSecondary)
                         setPadding(0, UiKit.dp(this@VaultActivity, 3), 0, 0)
