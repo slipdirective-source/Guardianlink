@@ -124,7 +124,7 @@ class MainActivity : AppCompatActivity() {
             startService(SensingService.stopIntent(this@MainActivity))
             addBubble("Sensing stop requested.", fromUser = false)
         })
-        chips.addView(chip("Pause location (governed)") { tryEngineAction() })
+        chips.addView(chip("Pause location") { tryEngineAction() })
         val chipRow = HorizontalScrollView(this).apply { addView(chips) }
         chipRegion = chipRow
 
@@ -336,7 +336,7 @@ class MainActivity : AppCompatActivity() {
                                 "turn on Microphone and I'll take spoken questions and commands.",
                             fromUser = false,
                         )
-                    else -> addBubble("Voice input stopped (engine error $error). Typing still works.", fromUser = false)
+                    else -> addBubble("Voice input stopped at the listening step — typing still works, and the mic button will try again.", fromUser = false)
                 }
             }
 
@@ -418,12 +418,13 @@ class MainActivity : AppCompatActivity() {
                 "I'm up, but your saved state couldn't be read, so nothing was loaded and nothing will be overwritten. " +
                     "This session starts fresh and says so."
             else ->
-                "I'm up. Ask me anything I'm keeping track of, tell me what happened, or give me something to do. " +
-                    "The card above is what I currently know — it updates as things change."
+                "I'm up. Ask me anything I'm keeping track of, tell me what happened, or give me something to do — " +
+                    "I answer from your record, in plain words, and the line under my name up top says how I'm running."
         }
         addBubble(opening, fromUser = false)
         addBubble(
-            "Governed actions run every check before they act. Voice assent isn't enrolled yet, so an action that needs it will stop at the voice check and tell you — try the “Pause location (governed)” chip to watch it happen.",
+            "One honest note: actions that need your voice will stop and tell you until a voice is enrolled — everything else is ready. " +
+                "Try the “Pause location” chip to watch a governed action run its checks.",
             fromUser = false,
         )
     }
@@ -433,10 +434,12 @@ class MainActivity : AppCompatActivity() {
         if (text.isEmpty()) return
         input.text.clear()
         addBubble(text, fromUser = true)
+        val thinking = addBubble("…", fromUser = false)
         thread(name = "gl-v2-conversation", isDaemon = true) {
             val result = synchronized(app.coreLock) { app.core.say(text) }
             app.persistCore()
             runOnUiThread {
+                chatLog.removeView(thinking)
                 addBubble(result.reply, fromUser = false)
                 renderedSignature = ""
                 renderPosture()
@@ -444,7 +447,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun addBubble(text: String, fromUser: Boolean) {
+    private fun addBubble(text: String, fromUser: Boolean): TextView {
         // Follow the conversation only when the sovereign is already
         // at the bottom; if they've scrolled up to read, new data
         // arriving must not yank the thread out from under them.
@@ -489,6 +492,7 @@ class MainActivity : AppCompatActivity() {
         if (nearBottom) {
             chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
         }
+        return bubble
     }
 
     // ------------------------------------------------------------------
@@ -552,7 +556,7 @@ class MainActivity : AppCompatActivity() {
         }
         startForegroundService(SensingService.startIntent(this))
         addBubble(
-            "Sensing started. Collectors report as they can; anything still missing a permission is named in the Now card instead of being guessed at.",
+            "Sensing started. What I can watch reports as it can; anything still missing a permission is named honestly — here and in the Vault — instead of being guessed at.",
             fromUser = false,
         )
     }
