@@ -23,6 +23,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import kotlin.concurrent.thread
 
 /**
  * Permissions pathways.
@@ -40,8 +41,31 @@ class PermissionsActivity : AppCompatActivity() {
 
     private lateinit var list: LinearLayout
 
+    /**
+     * Health grant state, cached. The real check is an IPC into
+     * Health Connect; asking it synchronously on the main thread
+     * (the old shape) could stall this screen's open by seconds.
+     * Now the check runs off-thread and the row repaints when the
+     * answer lands; until the first answer, the row says so.
+     */
+    @Volatile
+    private var healthKnown = false
+
+    @Volatile
+    private var healthGrantedCached = false
+
+    private fun kickHealthCheck() {
+        if (healthKnown) return
+        healthKnown = true // set before the thread starts: one check in flight
+        thread(name = "gl-health-check", isDaemon = true) {
+            val granted = computeHealthGranted()
+            healthGrantedCached = granted
+            runOnUiThread { if (!isFinishing && !isDestroyed) buildRows() }
+        }
+    }
+
     /** Health Connect grants live in Health Connect, not the runtime permission store. */
-    private fun healthGranted(): Boolean = try {
+    private fun computeHealthGranted(): Boolean = try {
         if (androidx.health.connect.client.HealthConnectClient.getSdkStatus(this) !=
             androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE
         ) {
@@ -186,9 +210,9 @@ class PermissionsActivity : AppCompatActivity() {
             granted(Manifest.permission.ACCESS_COARSE_LOCATION)
         out += Row(
             title = "Location",
-            why = "Lets Position answer where you are, from the phone itself.",
+            why = "Lets GuardianLink answer where you are, from the phone itself.",
             granted = fgLocation,
-            statusText = if (fgLocation) "On" else "Off — Position names location unavailable.",
+            statusText = if (fgLocation) "On" else "Off — where-you-are answers will say location is unavailable.",
             actionLabel = if (fgLocation) null else "Allow",
             action = if (fgLocation) null else ({
                 ActivityCompat.requestPermissions(
@@ -221,10 +245,10 @@ class PermissionsActivity : AppCompatActivity() {
         val mic = granted(Manifest.permission.RECORD_AUDIO)
         out += Row(
             title = "Microphone",
-            why = "For voice assent — the governed-action check that compares your voice to the enrolled one. " +
-                "Enrollment itself is a later step; this grant is what it will stand on.",
+            why = "For your voice — spoken questions and commands, the wake phrase, and voice assent, " +
+                "the check that compares your voice to the enrolled one. Enrollment itself is a later step; this grant is what it will stand on.",
             granted = mic,
-            statusText = if (mic) "On" else "Off — voice assent can't be offered.",
+            statusText = if (mic) "On" else "Off — voice commands and voice assent can't run.",
             actionLabel = if (mic) null else "Allow",
             action = if (mic) null else ({
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
@@ -256,7 +280,7 @@ class PermissionsActivity : AppCompatActivity() {
                 title = "Movement",
                 why = "Activity recognition powers the motion collector — still, walking, in a vehicle — as evidence, not tracking for its own sake.",
                 granted = motion,
-                statusText = if (motion) "On" else "Off — the motion collector names itself unavailable.",
+                statusText = if (motion) "On" else "Off — movement stays out of your record.",
                 actionLabel = if (motion) null else "Allow",
                 action = if (motion) null else ({
                     ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), REQ_MOTION)
@@ -292,7 +316,7 @@ class PermissionsActivity : AppCompatActivity() {
             title = "Contacts",
             why = "Resolves names to numbers for calls and texts, and reads names for context. Read-only; GuardianLink never writes your contacts.",
             granted = contactsGranted,
-            statusText = if (contactsGranted) "On — names resolve to numbers." else "Off — commands must use raw numbers.",
+            statusText = if (contactsGranted) "On — names resolve to numbers." else "Off — commands need full phone numbers.",
             actionLabel = if (contactsGranted) null else "Allow",
             action = if (contactsGranted) null else ({
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_CONTACTS), REQ_CONTACTS)
@@ -300,12 +324,18 @@ class PermissionsActivity : AppCompatActivity() {
         )
 
         // -- Health Connect ----------------------------------------------
-        val healthGranted = healthGranted()
+        val healthWasKnown = healthKnown
+        kickHealthCheck()
+        val healthGranted = healthGrantedCached
         out += Row(
             title = "Health (Health Connect)",
             why = "Steps, heart rate, sleep, blood oxygen, and weight from Health Connect — where your watch and health apps publish. Read-only summaries enter your record while sensing runs.",
             granted = healthGranted,
-            statusText = if (healthGranted) "On — health readings enter your record." else "Off — the health collector names itself unavailable.",
+            statusText = when {
+                healthGranted -> "On — health readings enter your record."
+                !healthWasKnown -> "Checking…"
+                else -> "Off — health readings stay out of your record until you grant this."
+            },
             actionLabel = if (healthGranted) null else "Grant in Health Connect",
             action = if (healthGranted) null else ({ requestHealthPermissions() }),
         )
@@ -366,7 +396,7 @@ class PermissionsActivity : AppCompatActivity() {
             title = "Calendar",
             why = "Your phone's calendar as context: what's next, what's today. Read-only — GuardianLink never writes to your calendar.",
             granted = calGranted,
-            statusText = if (calGranted) "On — calendar events enter your record while sensing runs." else "Off — the calendar collector names itself unavailable.",
+            statusText = if (calGranted) "On — calendar events enter your record while sensing runs." else "Off — calendar context stays out of your record.",
             actionLabel = if (calGranted) null else "Allow",
             action = if (calGranted) null else ({
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_CALENDAR), REQ_CALENDAR)
