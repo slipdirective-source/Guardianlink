@@ -145,7 +145,7 @@ class Conversation(private val deps: ConversationDeps) {
         if (Regex("^(no|cancel|never mind)\\b", RegexOption.IGNORE_CASE).containsMatchIn(lower) && pending != null) {
             return base(
                 Intent.CLARIFY,
-                "Left unexecuted: ${pending.actionType} on ${pending.target}. The proposal stays on record; nothing was done.",
+                "Left undone: ${plainActionPhrase(pending.actionType, pending.target)}. It stays on record; nothing was done.",
                 before,
             )
         }
@@ -1138,12 +1138,25 @@ class Conversation(private val deps: ConversationDeps) {
         }
     }
 
+    /** A proposed action named in plain words — never its wire name. */
+    private fun plainActionPhrase(actionType: String, target: String): String = when (actionType) {
+        "send_text" -> "the text to $target"
+        "phone_call" -> "the call to $target"
+        "send_email" -> "the email to $target"
+        "pause_collector" -> "pausing $target"
+        "resume_collector" -> "resuming $target"
+        "export_ledger" -> "the record export"
+        "set_rail" -> "the standing rail for $target"
+        "create_standing_question" -> "the standing question"
+        else -> "that action"
+    }
+
     /** Plain-words scope for a rail, the way its rendering speaks of it. */
     private fun railScopeWords(rail: Rail): String = when (rail.actionType) {
         "send_text" -> "Texts to ${rail.target}"
         "phone_call" -> "Calls to ${rail.target}"
         "send_email" -> "Email to ${rail.target}"
-        else -> "${rail.actionType} on ${rail.target}"
+        else -> "Actions on ${rail.target}"
     }
 
     /** Normalize a spoken bound to the action layer's vocabulary. */
