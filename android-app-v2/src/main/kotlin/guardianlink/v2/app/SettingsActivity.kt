@@ -107,7 +107,7 @@ class SettingsActivity : AppCompatActivity() {
         // this list from empty on every resume; a stamp added in
         // onCreate was wiped before it was ever seen.
         root.addView(TextView(this).apply {
-            text = "Build: 2026-11-09 · Hops front end"
+            text = "Build: 2026-11-09 · Security pass"
             textSize = 12f
             setTextColor(palette.textSecondary)
             setPadding(0, 0, 0, dp(10))
