@@ -4,6 +4,7 @@ import guardianlink.audit.MerkleAuditLog
 import guardianlink.voice.BiometricVerifier
 import guardianlink.voice.VerificationResult
 import guardianlink.voice.VoiceTemplate
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.sqrt
 
 /**
@@ -139,8 +140,18 @@ class NineGates(
      * time-decay on the sole writer's keys: write authority for an actionId
      * expires with the assent that granted it, even if the record itself is
      * lost (crash) — a stale key is a dead key.
+     *
+     * The map is concurrent and the seal claims its key with an atomic
+     * put-if-absent: two evaluations of the same actionId racing on
+     * different threads cannot both seal — exactly one wins the claim,
+     * the other halts as a replay. (Within one process. The records are
+     * not persisted: a restart empties the map, and cross-restart replay
+     * resistance rests on Gate 7 re-evaluating the re-presented assent
+     * in full — ceremony, freshness, idle death — not on this map.
+     * Persisting the seal set, e.g. by rebuilding it from the ledger's
+     * SEAL records at startup, is a documented gap, not a claim.)
      */
-    private val sealedActionIds = mutableMapOf<String, Long>()
+    private val sealedActionIds = ConcurrentHashMap<String, Long>()
 
     /**
      * Evict decayed seal records. A record dies exactly when the assent it
@@ -241,7 +252,14 @@ class NineGates(
             appendAudit("HALT gate=8 action=${ctx.actionId} reason=$reason")
             return GateOutcome.Halted(8, reason)
         }
-        sealedActionIds[ctx.actionId] = ctx.assentedAtMs
+        // Claim the seal key atomically: if a concurrent evaluation of
+        // the same actionId sealed first, this one is a replay and halts
+        // instead of sealing a second time. The claim precedes the SEAL
+        // audit append, so a key is never held by an unsealed execution.
+        if (sealedActionIds.putIfAbsent(ctx.actionId, ctx.assentedAtMs) != null) {
+            appendAudit("HALT gate=7 action=${ctx.actionId} reason=theta_assent: assent already consumed by a sealed execution")
+            return GateOutcome.Halted(7, "theta_assent: assent already consumed by a sealed execution")
+        }
         appendAudit("SEAL action=${ctx.actionId} rendering=${ctx.rendering}")
         return GateOutcome.Integrated(newSubstrate, sealRoot = ledger.root)
     }
