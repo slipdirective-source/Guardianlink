@@ -68,6 +68,20 @@ class GuardianLinkEngine(
     hmacSecret: ByteArray,
     policy: SidecarPolicy = SidecarPolicy(),
     initialSubstrate: SubstrateState = SubstrateState(mapOf("profile" to mapOf("name" to "Caleb"))),
+    /**
+     * Separate assent secret (GUARDIANLINK_ASSENT_SECRET in Main.kt):
+     * when set, only this key verifies human assent and the caller key
+     * can no longer sign assent. Null = legacy shared-key fallback.
+     */
+    assentSecret: ByteArray? = null,
+    /**
+     * Demo posture, OFF by default. Demo mode is the explicit opt-in to
+     * the sidecar's fabricated gate evidence (see [assent]) and the
+     * pass-through ZK / empty-revocation verifiers. Outside demo mode
+     * the sidecar submits empty evidence and the gates halt —
+     * fail-closed, because this layer has no real signal/ZK adapters.
+     */
+    val demoMode: Boolean = false,
 ) {
     private val executeLock = ReentrantLock()
     private val random = SecureRandom()
@@ -76,7 +90,7 @@ class GuardianLinkEngine(
         it.toFile().mkdirs()
     }
     private val anchor = AppendOnlyFileAnchor(anchorDir)
-    private val verifiers = SidecarVerifiers(hmacSecret, policy)
+    private val verifiers = SidecarVerifiers(hmacSecret, policy, assentSecret, demoMode)
     private val rails = Rails()
     private val clock = DurableMonotonicClock(dataDir.resolve("clock.state").toFile())
     private val ledger = MerkleAuditLog()
@@ -356,22 +370,40 @@ class GuardianLinkEngine(
         val keySig = keySignatureHex.hexToBytes()
             ?: return AssentResult.Rejected(1, "theta_sig: malformed caller signature (not hex)")
 
+        // Gate evidence posture. DEMO MODE ONLY: the sidecar fabricates
+        // passing signal/proof/entropy values so the full pipeline can
+        // be exercised without real adapters — an explicit, warned
+        // opt-in (GUARDIANLINK_DEMO=1), never the default. Outside demo
+        // mode this layer has no real signal or ZK adapter, so it
+        // submits EMPTY evidence and lets the gates halt (Gate 0
+        // theta_syn / Gate 3 theta_zk): fail-closed by construction
+        // rather than by fabrication. The drift vectors stay
+        // caller-supplied in both modes — they are request evidence
+        // the drift gate judges, not a sidecar claim.
         val evidence = ConciergeInterface.ActionEvidence(
             actionId = actionId,
-            signal = Signal("sidecar".toByteArray(Charsets.UTF_8), snr = 20.0, wellFormed = true),
+            signal = if (demoMode) {
+                Signal("sidecar".toByteArray(Charsets.UTF_8), snr = 20.0, wellFormed = true)
+            } else {
+                Signal(ByteArray(0), snr = 0.0, wellFormed = false)
+            },
             keys = KeyMaterial(
                 message = keyMessage,
                 signature = keySig,
             ),
             // Issued server-side at assent time: always within Gate 3's
             // freshness window, never future-dated.
-            proofs = Proofs(
-                "sidecar".toByteArray(Charsets.UTF_8),
-                "sidecar".toByteArray(Charsets.UTF_8),
-                issuedAtMs = clock.nowMs(),
-            ),
-            contextEntropyBits = 2.0,
-            contextParseTrees = 1,
+            proofs = if (demoMode) {
+                Proofs(
+                    "sidecar".toByteArray(Charsets.UTF_8),
+                    "sidecar".toByteArray(Charsets.UTF_8),
+                    issuedAtMs = clock.nowMs(),
+                )
+            } else {
+                Proofs(ByteArray(0), ByteArray(0), issuedAtMs = clock.nowMs())
+            },
+            contextEntropyBits = if (demoMode) 2.0 else 0.0,
+            contextParseTrees = if (demoMode) 1 else 0,
             rendering = rendering,
             assent = Assent(assentSig),
             assentedAtMs = assentedAtMs,
