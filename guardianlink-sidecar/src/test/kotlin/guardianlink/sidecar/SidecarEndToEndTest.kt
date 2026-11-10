@@ -51,7 +51,11 @@ class SidecarEndToEndTest {
     @BeforeEach
     fun startServer() {
         val dataDir = Files.createTempDirectory("sidecar-e2e")
-        engine = GuardianLinkEngine(dataDir, testSecret)
+        // The end-to-end ceremony exercises the documented demo posture
+        // (fabricated gate evidence, synthetic enrolled voice): opt in
+        // explicitly. The fail-closed defaults are covered separately in
+        // SidecarVerifiersTest.
+        engine = GuardianLinkEngine(dataDir, testSecret, demoMode = true)
         server = SidecarServer(engine, 0)
         server.start()
         base = "http://localhost:${server.port}"
