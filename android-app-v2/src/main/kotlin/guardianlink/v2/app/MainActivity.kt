@@ -12,9 +12,16 @@ import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.animation.ValueAnimator
+import android.text.Editable
+import android.text.InputType
+import android.text.TextWatcher
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.HorizontalScrollView
@@ -45,6 +52,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chipRegion: HorizontalScrollView
     private var keyboardUp = false
     private lateinit var input: EditText
+    private lateinit var micButton: Button
+    private lateinit var sendButton: Button
+    private var listening = false
+    private var micIdleBg: android.graphics.drawable.Drawable? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private var renderedSignature: String = ""
@@ -104,9 +115,11 @@ class MainActivity : AppCompatActivity() {
 
         chatLog = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(16, 10, 16, 10)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         chatScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
@@ -117,7 +130,7 @@ class MainActivity : AppCompatActivity() {
 
         val chips = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(16, 4, 16, 4)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
         }
         chips.addView(chip("Start sensing") { startSensing() })
         chips.addView(chip("Stop sensing") {
@@ -125,11 +138,30 @@ class MainActivity : AppCompatActivity() {
             addBubble("Sensing stop requested.", fromUser = false)
         })
         chips.addView(chip("Pause location") { tryEngineAction() })
-        val chipRow = HorizontalScrollView(this).apply { addView(chips) }
+        val chipRow = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(chips)
+        }
         chipRegion = chipRow
 
         input = EditText(this).apply {
-            hint = "Message GuardianLink…"
+            hint = INPUT_HINT
+            setTextColor(palette.appBubbleText)
+            setHintTextColor(palette.textSecondary)
+            textSize = 15.5f
+            // Wraps up to four lines but keeps the keyboard's Send key.
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+            imeOptions = EditorInfo.IME_ACTION_SEND
+            maxLines = 4
+            setHorizontallyScrolling(false)
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEND) {
+                    submitConversation()
+                    true
+                } else {
+                    false
+                }
+            }
             background = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
             setPadding(dp(16), dp(10), dp(8), dp(10))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -137,21 +169,42 @@ class MainActivity : AppCompatActivity() {
         val mic = Button(this).apply {
             text = "🎤"
             isAllCaps = false
+            stateListAnimator = null
             background = UiKit.rounded(this@MainActivity, UiKit.blend(palette.cardBg, palette.userBubble, 0.15f), 999f)
             layoutParams = LinearLayout.LayoutParams(dp(46), dp(46)).apply { setMargins(dp(4), 0, dp(4), 0) }
-            setOnClickListener { startVoiceCommand() }
+            setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                // Tap again while listening to finish early.
+                if (listening) recognizer?.stopListening() else startVoiceCommand()
+            }
         }
+        micButton = mic
+        micIdleBg = mic.background
         val send = Button(this).apply {
             text = "Send"
             isAllCaps = false
             setTextColor(Color.WHITE)
+            stateListAnimator = null
             background = UiKit.rounded(this@MainActivity, palette.userBubble, 999f)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 dp(46),
             )
-            setOnClickListener { submitConversation() }
+            alpha = SEND_IDLE_ALPHA
+            setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                submitConversation()
+            }
         }
+        sendButton = send
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val target = if (s.isNullOrBlank()) SEND_IDLE_ALPHA else 1f
+                if (send.alpha != target) send.animate().alpha(target).setDuration(150).start()
+            }
+        })
         val inputRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -210,7 +263,7 @@ class MainActivity : AppCompatActivity() {
             if (up != keyboardUp) {
                 keyboardUp = up
                 chipRegion.visibility = if (up) View.GONE else View.VISIBLE
-                if (up) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+                if (up) scrollToBottom()
             }
         }
 
@@ -306,6 +359,7 @@ class MainActivity : AppCompatActivity() {
                     .orEmpty()
                 sr.destroy()
                 if (recognizer === sr) recognizer = null
+                setListening(false)
                 resumeWakeAfterDictation()
                 if (text.isNotEmpty()) {
                     input.setText(text)
@@ -325,6 +379,7 @@ class MainActivity : AppCompatActivity() {
             override fun onError(error: Int) {
                 sr.destroy()
                 if (recognizer === sr) recognizer = null
+                setListening(false)
                 resumeWakeAfterDictation()
                 when (error) {
                     SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
@@ -342,7 +397,12 @@ class MainActivity : AppCompatActivity() {
 
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onRmsChanged(rmsdB: Float) {
+                // The mic breathes with your voice while it listens.
+                val level = (rmsdB.coerceIn(0f, 10f) / 10f)
+                val scale = 1f + level * 0.22f
+                micButton.animate().scaleX(scale).scaleY(scale).setDuration(90).start()
+            }
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {}
             override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -360,10 +420,11 @@ class MainActivity : AppCompatActivity() {
         }
         try {
             sr.startListening(listenIntent)
-            addBubble("Listening…", fromUser = false)
+            setListening(true)
         } catch (e: Exception) {
             sr.destroy()
             if (recognizer === sr) recognizer = null
+            setListening(false)
             resumeWakeAfterDictation()
             addBubble("Voice input couldn't start: ${e.message}", fromUser = false)
         }
@@ -434,13 +495,27 @@ class MainActivity : AppCompatActivity() {
         if (text.isEmpty()) return
         input.text.clear()
         addBubble(text, fromUser = true)
-        val thinking = addBubble("…", fromUser = false)
+        val thinking = addBubble("•", fromUser = false)
+        val dots = ValueAnimator.ofInt(1, 4).apply {
+            duration = 1100
+            repeatCount = ValueAnimator.INFINITE
+            addUpdateListener { a ->
+                val n = (a.animatedValue as Int).coerceAtMost(3)
+                thinking.text = List(n) { "•" }.joinToString(" ")
+            }
+            start()
+        }
         thread(name = "gl-v2-conversation", isDaemon = true) {
             val result = synchronized(app.coreLock) { app.core.say(text) }
             app.persistCore()
             runOnUiThread {
-                chatLog.removeView(thinking)
-                addBubble(result.reply, fromUser = false)
+                dots.cancel()
+                // The reply lands in the bubble that was thinking,
+                // instead of one bubble vanishing and another appearing.
+                thinking.alpha = 0.35f
+                thinking.text = result.reply
+                thinking.animate().alpha(1f).setDuration(180).start()
+                scrollToBottom()
                 renderedSignature = ""
                 renderPosture()
             }
@@ -488,10 +563,16 @@ class MainActivity : AppCompatActivity() {
             gravity = if (fromUser) Gravity.END else Gravity.START
             setMargins(8, 6, 8, 6)
         }
+        bubble.alpha = 0f
+        bubble.translationY = dp(14).toFloat()
         chatLog.addView(bubble, params)
-        if (nearBottom) {
-            chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
-        }
+        bubble.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(BUBBLE_IN_MS)
+            .setInterpolator(DecelerateInterpolator(1.6f))
+            .start()
+        if (nearBottom) scrollToBottom()
         return bubble
     }
 
@@ -654,7 +735,11 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 dp(38),
             ).apply { setMargins(dp(4), dp(2), dp(4), dp(2)) }
-            setOnClickListener { action() }
+            stateListAnimator = null
+            setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                action()
+            }
         }
     }
 
@@ -662,6 +747,25 @@ class MainActivity : AppCompatActivity() {
         recognizer?.destroy()
         recognizer = null
         super.onDestroy()
+    }
+
+    /** Glide to the newest message instead of jumping. */
+    private fun scrollToBottom() {
+        chatScroll.post { chatScroll.smoothScrollTo(0, chatLog.height) }
+    }
+
+    /** Listening shows on the mic and in the input, not as a chat message. */
+    private fun setListening(on: Boolean) {
+        listening = on
+        val palette = GlPrefs.palette(this)
+        if (on) {
+            micButton.background = UiKit.rounded(this, palette.userBubble, 999f)
+            input.hint = "Listening… tap the mic to finish"
+        } else {
+            micButton.background = micIdleBg
+            micButton.animate().scaleX(1f).scaleY(1f).setDuration(160).start()
+            input.hint = INPUT_HINT
+        }
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
@@ -673,9 +777,13 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val REFRESH_MS = 1000L
+        private const val BUBBLE_IN_MS = 240L
+        private const val SEND_IDLE_ALPHA = 0.45f
+        private const val INPUT_HINT = "Message GuardianLink…"
         private const val REQ_SENSING_PERMISSIONS = 2002
 
         /** Set by the assistant-role session when the system summon opens us. */
         const val EXTRA_VOICE_SUMMON = "guardianlink.v2.app.extra.VOICE_SUMMON"
     }
 }
+
