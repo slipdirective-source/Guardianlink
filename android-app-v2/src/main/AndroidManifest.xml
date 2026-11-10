@@ -137,10 +137,19 @@
             </intent-filter>
         </service>
 
+        <!-- Recognition-service stub for the assistant role: it never
+             captures audio (it answers ERROR_CLIENT; real recognition is
+             the platform engine's, driven from MainActivity). It must
+             still not be bindable by arbitrary apps: BIND_VOICE_INTERACTION
+             is signature|privileged, so only the system can bind it —
+             the same protection as the two voice-interaction services
+             above. Exported stays true so the system can discover it
+             for the role. -->
         <service
             android:name="guardianlink.v2.app.GlRecognitionService"
             android:exported="true"
-            android:label="GuardianLink recognition">
+            android:label="GuardianLink recognition"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
             <intent-filter>
                 <action android:name="android.speech.RecognitionService" />
             </intent-filter>
