@@ -60,8 +60,15 @@ data class SidecarPolicy(
     val governanceDivergence: (Action) -> Double = { 0.0 },
     /** Gate 5, theta_loop. Default: loop assumed consistent. */
     val metaLoopConsistent: (GateContext) -> Boolean = { true },
-    /** Deployment's revocation feed. Default: no feed wired. */
-    val revocationsFor: (String) -> List<Revocation> = { emptyList() },
+    /**
+     * Deployment's revocation feed. Default: NO feed wired (null) —
+     * deliberately distinguishable from a wired feed that returns an
+     * empty list. With no feed wired, [SidecarVerifiers.revocationsFor]
+     * fails closed (throws → the engine halts at Gate 8) unless the
+     * sidecar runs in demo mode; "no feed" must never be silently
+     * indistinguishable from "feed checked, nothing revoked".
+     */
+    val revocationFeed: ((String) -> List<Revocation>)? = null,
     /** Validity of a feed revocation. Default: fail-closed (none valid). */
     val verifyRevocation: (Revocation) -> Boolean = { false },
 )
@@ -71,24 +78,40 @@ data class SidecarPolicy(
  *
  * REAL (sidecar-owned trust):
  * - verifyAssent enforces the (rendering, assentedAtMs, actionId) binding
- *   contract with HMAC-SHA256 under the server-side secret. Backdating,
- *   refreshing, and replay across actionIds all fail the MAC.
- * - verifySignature authenticates the caller the same way (pre-shared key).
+ *   contract with HMAC-SHA256. When a separate [assentSecret] is
+ *   configured it — and only it — verifies assent; the caller key
+ *   ([hmacSecret]) can then no longer produce "human" assent, which is
+ *   the separation the product is built on. Without [assentSecret] the
+ *   sidecar falls back to the shared key (Main.kt prints a startup
+ *   warning in that posture; existing deployments behave as before).
+ * - verifySignature authenticates the caller with the shared key.
+ *
+ * FAIL-CLOSED BY DEFAULT (the demo posture is opt-in via [demoMode]):
+ * - verifyZk: there is no ZK system at this layer to check against, so
+ *   outside demo mode it returns false and Gate 3 halts. Returning true
+ *   unconditionally (the old behavior) made the README's fail-closed
+ *   claim false over REST. Demo mode restores the pass, explicitly.
+ * - revocationsFor: with no [SidecarPolicy.revocationFeed] wired, this
+ *   throws outside demo mode — the engine treats a throwing feed as
+ *   fail-closed and halts at Gate 8. "No feed configured" must never
+ *   read as "nothing revoked". Demo mode returns the empty list.
  *
  * DEPLOYMENT-OWNED (explicit, not stubbed silently):
- * - verifyZk is NOT enforced by the sidecar: there is no ZK system here
- *   to check against. Deployments requiring zero-knowledge context audit
- *   must use the Kotlin engine API with real verifiers.
  * - boundaryPermitted / policyRules / metaLoopConsistent /
- *   governanceDivergence / revocationsFor default to permissive/empty and
- *   are meant to be supplied via [SidecarPolicy]. Shipping them permissive
- *   is the documented demo posture (same as Main.kt's demoVerifiers), not
- *   a claim of enforcement.
+ *   governanceDivergence default to permissive values and are meant to
+ *   be supplied via [SidecarPolicy]. Deployments requiring real
+ *   zero-knowledge context audit must use the Kotlin engine API with
+ *   real verifiers behind these ports.
  */
 class SidecarVerifiers(
     private val hmacSecret: ByteArray,
     private val policy: SidecarPolicy = SidecarPolicy(),
+    private val assentSecret: ByteArray? = null,
+    private val demoMode: Boolean = false,
 ) : Verifiers {
+
+    /** The key assent is verified against: the separate secret when set. */
+    private val assentKey: ByteArray get() = assentSecret ?: hmacSecret
 
     override fun verifyAssent(
         rendering: String,
@@ -96,7 +119,7 @@ class SidecarVerifiers(
         actionId: String,
         signature: ByteArray,
     ): Boolean {
-        val expected = hmacSha256Hex(hmacSecret, assentMessage(actionId, assentedAtMs, rendering))
+        val expected = hmacSha256Hex(assentKey, assentMessage(actionId, assentedAtMs, rendering))
         val presented = signature.toHex()
         // Constant-time compare; also rejects malformed (non-hex) input
         // by length mismatch.
@@ -114,10 +137,24 @@ class SidecarVerifiers(
         )
     }
 
-    override fun verifyZk(proof: ByteArray, publicInputs: ByteArray): Boolean = true
+    /**
+     * No ZK system exists at this layer. Fail-closed by default: Gate 3
+     * halts. Demo mode ([demoMode]) is the explicit opt-in to the old
+     * pass-through posture.
+     */
+    override fun verifyZk(proof: ByteArray, publicInputs: ByteArray): Boolean = demoMode
 
-    override fun revocationsFor(actionId: String): List<Revocation> =
-        policy.revocationsFor(actionId)
+    override fun revocationsFor(actionId: String): List<Revocation> {
+        policy.revocationFeed?.let { return it(actionId) }
+        if (demoMode) return emptyList()
+        // Fail-closed: an unwired feed is a deployment error, not a
+        // finding of "nothing revoked". The engine catches this throw
+        // and halts at Gate 8 (theta_norev: revocation feed threw).
+        throw IllegalStateException(
+            "no revocation feed configured: wire SidecarPolicy.revocationFeed, " +
+                "or run in demo mode (GUARDIANLINK_DEMO=1) to accept the empty-feed posture explicitly"
+        )
+    }
 
     override fun verifyRevocation(revocation: Revocation): Boolean =
         policy.verifyRevocation(revocation)
