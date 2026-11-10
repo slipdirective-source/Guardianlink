@@ -52,6 +52,14 @@ refresh, and backdating are defeated by the binding, not by policy. Every
 execution — including yours — goes through `ConciergeInterface.execute`;
 there is no other path, over REST or otherwise.
 
+`sign` is the person's signer, and it must not be the API caller's own
+key: run the sidecar with `GUARDIANLINK_ASSENT_SECRET` set and the
+assent signature must come from that separate secret, held by the
+person's side (an HSM, a separate process, a phone). Assent signed
+with the caller key is then rejected at Gate 7 — the process being
+governed cannot approve its own actions. Without the separate secret
+the sidecar falls back to the shared key and warns at startup.
+
 TypeScript: `guardianlink-sidecar/guardianlink-ts/` (`client.ts`, quickstart in
 `demoVoice.ts`). Full API: `guardianlink-sidecar/README.md`.
 
