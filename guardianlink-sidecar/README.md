@@ -95,12 +95,18 @@ unknown/expired actionId. Challenges lapse after 5 minutes.
 
 Signatures (defaults, pre-shared-key grade):
 
-- `assentSignature = HMAC-SHA256(secret, "v1|assent|{actionId}|{assentedAtMs}|{rendering}")`
+- `assentSignature = HMAC-SHA256(assentSecret, "v1|assent|{actionId}|{assentedAtMs}|{rendering}")`
   as lowercase hex. This enforces the engine's
   `(rendering, assentedAtMs, actionId)` binding contract: backdating,
-  refreshing, and cross-action replay all fail the MAC.
+  refreshing, and cross-action replay all fail the MAC. `assentSecret`
+  is the server's `GUARDIANLINK_ASSENT_SECRET` when one is set — a key
+  held by the person's side only. When it is set, assent signed with
+  the caller key is rejected at Gate 7: the process that calls the API
+  cannot produce human assent. When it is not set, the shared secret
+  below is used for both (legacy fallback; the server warns at
+  startup).
 - `keySignature = HMAC-SHA256(secret, "v1|caller|" + keyMessage)` — caller
-  authentication for Gate 1.
+  authentication for Gate 1, under the shared `GUARDIANLINK_HMAC_SECRET`.
 
 `assentAudio` is **required** (absent → `400`; malformed base64 → `400`).
 It is verified by the engine at Gate 7 (`theta_voice`): speaker match
@@ -149,11 +155,16 @@ Read-only view of the governed substrate. Bypasses nothing.
 
 Real, sidecar-owned:
 
-- **Assent binding** — HMAC-SHA256 under the server secret enforces the
-  `(rendering, assentedAtMs, actionId)` triple. This is pre-shared-key
-  grade: it binds, but anyone holding the secret can sign. Production
-  deployments must substitute signature verification (Ed25519 etc.) behind
-  the engine's `Verifiers` port.
+- **Assent binding** — HMAC-SHA256 enforces the
+  `(rendering, assentedAtMs, actionId)` triple. With
+  `GUARDIANLINK_ASSENT_SECRET` set, assent verifies under that separate
+  key only: the caller key authenticates API calls and can no longer
+  sign assent, so the governed agent cannot approve its own actions.
+  Without it, assent falls back to the shared caller key (anyone
+  holding it can sign — the server warns at startup). This is
+  pre-shared-key grade either way; production deployments should
+  substitute signature verification (Ed25519 etc.) behind the engine's
+  `Verifiers` port.
 - **Caller authentication** — same HMAC construction for Gate 1.
 - **Voice biometrics** — the real engine adapter: a GMM-UBM speaker
   verifier with challenge-response liveness, enforced at Gate 7
@@ -167,13 +178,22 @@ Real, sidecar-owned:
 
 Deployment-owned (explicit defaults, not silent stubs):
 
-- **Zero-knowledge proofs** are NOT enforced (`verifyZk` returns true).
-  There is no ZK system here to check against.
+- **Zero-knowledge proofs** are NOT enforced — there is no ZK system
+  here to check against — so `verifyZk` returns **false** and Gate 3
+  halts, rather than passing silently. `GUARDIANLINK_DEMO=1` restores
+  the pass-through explicitly as a demo posture.
+- **Gate evidence** (signal SNR/well-formedness, proof bytes, context
+  entropy, parse trees) is fabricated ONLY in demo mode
+  (`GUARDIANLINK_DEMO=1`). Outside demo mode the sidecar submits empty
+  evidence and the gates halt — this layer has no real adapters.
 - **Governance policy** (`boundaryPermitted`, `policyRules`,
   `metaLoopConsistent`, `governanceDivergence`) defaults to permissive;
   wire real policy via `SidecarPolicy` in code.
-- **Revocation feed** defaults to empty; wire a real feed via
-  `SidecarPolicy.revocationsFor`/`verifyRevocation`.
+- **Revocation feed**: none is wired by default, and outside demo
+  mode that halts every assent at Gate 8 — "no feed" is never read as
+  "nothing revoked". Wire a real feed via
+  `SidecarPolicy.revocationFeed`/`verifyRevocation`. Demo mode accepts
+  the empty feed explicitly.
 - **Anchor** is `AppendOnlyFileAnchor`: tamper-evident, host-filesystem
   grade — not resistant to an attacker with write access to the anchor
   directory. Substitute a write-once store/TSA behind `ExternalAnchor`
@@ -199,12 +219,16 @@ the real Gate 7).
 
 ```bash
 export GUARDIANLINK_HMAC_SECRET=$(openssl rand -hex 32)  # required, ≥16 bytes
+export GUARDIANLINK_ASSENT_SECRET=$(openssl rand -hex 32)  # recommended: separates assent from the caller key
 export GUARDIANLINK_PORT=8080          # optional
 export GUARDIANLINK_DATA_DIR=./sidecar-data  # optional
+# export GUARDIANLINK_DEMO=1           # demo posture only — fabricated evidence, ZK pass-through
 ./gradlew :guardianlink-sidecar:run
 ```
 
-The server refuses to start without `GUARDIANLINK_HMAC_SECRET`.
+The server refuses to start without `GUARDIANLINK_HMAC_SECRET`. Without
+`GUARDIANLINK_ASSENT_SECRET` it starts with a warning and the legacy
+shared-key assent fallback.
 
 ## Clients
 
